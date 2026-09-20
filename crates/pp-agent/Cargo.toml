@@ -1,0 +1,18 @@
+[package]
+name = "pp-agent"
+version = "0.1.0"
+edition = "2021"
+description = "有界流水线式的 Agent:市场调研、看图建模(之后还有周报)。步骤固定、每步有预算、产出有结构,可回归测试。"
+
+[dependencies]
+pp-common = { path = "../pp-common" }
+pp-providers = { path = "../pp-providers" }
+# 只用它的纯文本部分(代码契约、参数解析)与错误类型;真正起 Python 进程的是调用方给的 CadExecutor
+pp-cad = { path = "../pp-cad" }
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = "0.4"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }

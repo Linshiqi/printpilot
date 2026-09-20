@@ -1,0 +1,11 @@
+# 零依赖分发:静态链接 MSVC C 运行时,用户机上不需要预装「VC++ 可再发行组件」。
+# 只作用于 windows-msvc 目标(不影响 wasm 前端);cc 编译的 SQLite 随之走 /MT。
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+# 前端 wasm 影子栈 1MB → 8MB(velo 实测:巨型 view! 的挂载链能打穿默认 1MB)。
+# ⚠️ wasm 栈溢出**不是 panic 是 trap**:表现为 `RuntimeError: memory access out of bounds`,
+# panic hook 与日志里一条都没有;之后每个事件处理器进入即崩,症状是「点了没反应,
+# 然后整个界面点不动」。排查同类问题用 scripts/cdp.py 连 WebView 抓异常栈。
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "link-arg=-zstack-size=8388608"]

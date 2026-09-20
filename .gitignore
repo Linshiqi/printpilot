@@ -1,0 +1,37 @@
+# Rust / Tauri / Trunk 构建产物
+target/
+dist/
+src-tauri/gen/schemas/
+
+# 视图桥（three.js）子工程的依赖；构建产物 public/viewer3d/ 需要入库
+node_modules/
+
+# 开发用资料库与导出物
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# 密钥与本地配置（密钥本来就只进系统凭据管理器，这里是兜底）
+.env
+.env.*
+*.key
+*.pem
+
+# 发布中间产物
+release/
+*.sig
+
+# 日志与系统文件
+*.log
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# 建模引擎包:构建产物(约 200 MB),由 scripts/build-engine-pack.py 或 CI 生成
+src-tauri/resources/cad-engine/cad-engine.tar.zst
+src-tauri/resources/cad-engine/cad-engine.json

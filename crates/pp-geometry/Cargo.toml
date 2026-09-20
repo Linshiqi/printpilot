@@ -1,0 +1,17 @@
+[package]
+name = "pp-geometry"
+version = "0.1.0"
+edition = "2021"
+description = "网格内核:读入、度量、基础清理、变换、切平底并封口、导出。纯原生 Rust,可单测。"
+
+# 许可证纪律(CLAUDE.md 硬约束 6):这里只允许 MIT / Apache / BSD / MPL 的依赖,不引入 GPL。
+[dependencies]
+pp-common = { path = "../pp-common" }
+# 只要解析与访问器读取;不开 import(会拖进 image/base64 去解码贴图,我们只要几何)
+gltf = { version = "1", default-features = false, features = ["utils"] }
+# 约束 Delaunay 三角剖分(MIT/Apache,精确谓词):给切口封盖用。
+# 不用 earcut:它会**丢掉共线点**,而切口轮廓上共线点极常见(平直侧面被切开就是一串共线交点),
+# 丢点后封盖的边与侧面的边对不上(T 形接缝),网格就不再水密。CDT 保留每一个轮廓顶点。
+spade = "2"
+# 3MF 是 zip 容器。只开 deflate:bzip2/lzma/zstd 会拖进 C 依赖,违反零依赖分发(velo 同款约束)
+zip = { version = "2", default-features = false, features = ["deflate"] }

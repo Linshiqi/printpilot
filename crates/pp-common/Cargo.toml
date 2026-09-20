@@ -1,0 +1,16 @@
+[package]
+name = "pp-common"
+version = "0.1.0"
+edition = "2021"
+description = "前后端共享:DTO、枚举、错误码。前端(wasm)也编译它,所以这里不放任何重依赖。"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1"
+
+[features]
+default = []
+# 后端专属部分的开关(目前为空;与 velo-common 的约定保持一致,留作扩展点)
+backend = []

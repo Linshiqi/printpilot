@@ -1,0 +1,18 @@
+[package]
+name = "pp-providers"
+version = "0.1.0"
+edition = "2021"
+description = "第三方供应商适配器:LLM、联网搜索(之后还有出图、3D)。业务代码只依赖这里的 trait,不直接依赖任何一家。"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+async-trait = "0.1"
+log = "0.4"
+# 图片 → data URL(视觉输入)
+base64 = "0.22"
+# 与 velo 同版本。默认特性 = rustls + 系统代理;socks 给用代理访问海外接口的用户
+reqwest = { version = "0.13", features = ["json", "socks"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }

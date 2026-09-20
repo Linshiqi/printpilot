@@ -1,0 +1,47 @@
+[package]
+name = "printpilot"
+version = "0.9.0"
+description = "PrintPilot — 3D 打印爆品工作台"
+edition = "2021"
+
+[lib]
+# `_lib` 后缀避免 lib 与 bin 同名(Windows 上会撞,见 rust-lang/cargo#8519)
+name = "printpilot_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "printpilot"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+pp-common = { path = "../crates/pp-common", features = ["backend"] }
+pp-db = { path = "../crates/pp-db" }
+pp-geometry = { path = "../crates/pp-geometry" }
+pp-providers = { path = "../crates/pp-providers" }
+pp-agent = { path = "../crates/pp-agent" }
+pp-cad = { path = "../crates/pp-cad" }
+async-trait = "0.1"
+# 参考图入库前缩小并重新编码:上传更快,也顺带去掉 EXIF(手机照片里有 GPS)——这张图之后要发给第三方模型
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+# 随安装包带来的建模引擎包(tar.zst):校验 + 解包。ruzstd 是纯 Rust 的 zstd 解码器,不引入 C 依赖
+sha2 = "0.10"
+tar = { version = "0.4", default-features = false }
+ruzstd = "0.8"
+
+tauri = { version = "2", features = ["devtools"] }
+tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-log = "2"
+tauri-plugin-single-instance = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = "0.4"
+# 接口密钥只进系统凭据管理器(Windows Credential Manager),不写配置文件(CLAUDE.md 硬约束 4)
+keyring = { version = "3", features = ["windows-native", "apple-native"] }
+
+[dev-dependencies]
+# 集成测试的 #[tokio::test] 运行时(生产环境的 tokio 由 tauri 托管)
+tokio = { version = "1", features = ["macros", "rt"] }

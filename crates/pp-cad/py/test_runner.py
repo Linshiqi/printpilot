@@ -1,0 +1,264 @@
+# -*- coding: utf-8 -*-
+"""执行器的测试。用引擎自己的解释器跑:
+
+    <engine>\\python.exe -m unittest discover -s crates/pp-cad/py -v
+
+白名单那一组不需要 build123d;端到端那一组在没装 build123d 时自动跳过。
+"""
+import ast
+import json
+import os
+import tempfile
+import unittest
+
+import runner
+
+try:
+    import build123d  # noqa: F401
+    HAVE_B123D = True
+except Exception:  # pragma: no cover
+    HAVE_B123D = False
+
+
+def rejected(code):
+    try:
+        runner.validate(ast.parse(code))
+    except runner.Rejected as e:
+        return str(e)
+    return None
+
+
+class AllowlistTests(unittest.TestCase):
+    def test_ordinary_modeling_code_passes(self):
+        code = """
+from build123d import *
+import math
+
+# ---- PARAMS ----
+width = 60.0  # mm | 总宽 | [20, 200]
+
+with BuildPart() as p:
+    Box(width, 40, 6)
+    fillet(p.edges().filter_by(Axis.Z), radius=2)
+
+class Helper:
+    def area(self, r):
+        return math.pi * r ** 2
+
+result = p.part
+"""
+        self.assertIsNone(rejected(code))
+
+    def test_other_imports_are_refused(self):
+        for code in ["import os", "import subprocess as sp", "from pathlib import Path",
+                     "import build123d", "from . import x", "import math.os"]:
+            self.assertIsNotNone(rejected(code), code)
+        self.assertIsNone(rejected("import math"))
+        self.assertIsNone(rejected("from math import pi, sin"))
+
+    def test_dangerous_builtins_are_refused(self):
+        for code in ["open('x')", "eval('1')", "exec('x=1')", "__import__('os')",
+                     "getattr(Box, 'x')", "globals()", "type(1)", "compile('1','','eval')"]:
+            self.assertIsNotNone(rejected(code), code)
+
+    def test_dunder_escapes_are_refused(self):
+        for code in ["().__class__", "Box.__init__.__globals__", "x = [].__class__.__base__",
+                     "__builtins__", "__name__"]:
+            self.assertIsNotNone(rejected(code), code)
+
+    def test_build123d_file_io_is_refused_in_every_spelling(self):
+        for code in ["export_step(p, 'C:/x.step')", "export_stl(p, 'x.stl')", "import_step('x.step')",
+                     "from build123d import export_stl", "Mesher().write('x.3mf')",
+                     "p.export_brep('x')", "ExportSVG()", "p.part.save('x')"]:
+            self.assertIsNotNone(rejected(code), code)
+
+    def test_async_and_scope_tricks_are_refused(self):
+        for code in ["async def f():\n    pass", "def f():\n    global x\n    x = 1"]:
+            self.assertIsNotNone(rejected(code), code)
+
+    def test_shared_objects_cannot_be_modified_so_nothing_leaks_into_the_next_job(self):
+        # 常驻模式下同一个进程跑很多段代码:给共享对象的属性赋值会留到下一个任务里
+        for code in ["from build123d import *\nBox.leak = 1", "import math\nmath.pi = 3",
+                     "from build123d import *\ndel Box.leak", "import math\nmath.pi += 1"]:
+            self.assertIn("assigning to attributes", rejected(code) or "", code)
+        # 读属性、调方法、给局部变量赋值照常
+        self.assertIsNone(rejected("from build123d import *\nb = Box(1, 1, 1)\nh = b.bounding_box().size.Z\nresult = b"))
+
+    def test_rejection_reports_the_line(self):
+        try:
+            runner.validate(ast.parse("x = 1\ny = 2\nimport os\n"))
+            self.fail("should have been rejected")
+        except runner.Rejected as e:
+            self.assertEqual(e.line, 3)
+
+
+@unittest.skipUnless(HAVE_B123D, "build123d is not installed in this interpreter")
+class EndToEndTests(unittest.TestCase):
+    def run_code(self, code, exports=("step", "stl")):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        return runner.run({"code": code, "out_dir": self.tmp.name, "exports": list(exports)})
+
+    def test_a_box_with_a_hole_exports_and_measures_exactly(self):
+        r = self.run_code("""
+from build123d import *
+w, d, h, hole = 60.0, 40.0, 10.0, 8.0
+result = Box(w, d, h) - Cylinder(hole / 2, h)
+""")
+        self.assertTrue(r["ok"], r)
+        m = r["metrics"]
+        self.assertEqual([round(v, 6) for v in m["size"]], [60.0, 40.0, 10.0])
+        import math
+        self.assertAlmostEqual(m["volume_mm3"], 60 * 40 * 10 - math.pi * 4 ** 2 * 10, places=3)
+        self.assertEqual(m["solids"], 1)
+        self.assertTrue(m["is_valid"])
+        for name in r["files"].values():
+            self.assertGreater(os.path.getsize(os.path.join(self.tmp.name, name)), 100)
+
+    def test_builder_mode_result_is_accepted(self):
+        r = self.run_code("""
+from build123d import *
+with BuildPart() as p:
+    Box(20, 20, 5)
+    fillet(p.edges().filter_by(Axis.Z), radius=2)
+result = p
+""")
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(r["metrics"]["solids"], 1)
+
+    def test_3mf_export(self):
+        r = self.run_code("from build123d import *\nresult = Sphere(10)", exports=("3mf",))
+        self.assertTrue(r["ok"], r)
+        self.assertIn("3mf", r["files"])
+
+    def test_runtime_errors_point_at_the_users_line_without_library_frames(self):
+        r = self.run_code("""
+from build123d import *
+box = Box(10, 10, 10)
+result = fillet(box.edges(), radius=50)
+""")
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["stage"], "exec")
+        self.assertEqual(r["line"], 4)
+        self.assertNotIn("site-packages", r["traceback"])
+        # 模型要看到出错的那一行源码才好修(用户代码不是磁盘文件,traceback 自己查不到)
+        self.assertIn("line 4: result = fillet(box.edges(), radius=50)", r["traceback"])
+
+    def test_missing_or_empty_result_is_explained(self):
+        r = self.run_code("from build123d import *\npart = Box(1, 1, 1)")
+        self.assertEqual((r["ok"], r["stage"]), (False, "result"))
+        self.assertIn("result", r["message"])
+
+        r = self.run_code("from build123d import *\nresult = Box(10, 10, 10) - Box(20, 20, 20)")
+        self.assertEqual((r["ok"], r["stage"]), (False, "result"))
+
+        r = self.run_code("result = 42")
+        self.assertEqual((r["ok"], r["stage"]), (False, "result"))
+
+    def test_refused_code_never_runs(self):
+        marker = os.path.join(tempfile.gettempdir(), "pp_runner_should_not_exist.txt")
+        if os.path.exists(marker):
+            os.remove(marker)
+        r = self.run_code(f"open({marker!r}, 'w').write('x')\nresult = None")
+        self.assertEqual((r["ok"], r["stage"]), (False, "validate"))
+        self.assertFalse(os.path.exists(marker))
+
+    def test_each_job_gets_its_own_math_module(self):
+        import math
+        a, b = runner.build_namespace(), runner.build_namespace()
+        self.assertIsNot(a["math"], math)
+        self.assertIsNot(a["math"], b["math"])
+        a["math"].pi = 3  # 就算绕过了白名单,也只改到这一个任务自己的替身
+        self.assertEqual(b["math"].pi, math.pi)
+        self.assertAlmostEqual(a["math"].sqrt(16), 4.0)
+
+    def test_io_names_are_not_even_in_the_namespace(self):
+        ns = runner.build_namespace()
+        for name in ["export_step", "export_stl", "import_step", "Mesher", "open", "__import__"]:
+            self.assertNotIn(name, ns)
+            self.assertNotIn(name, ns["__builtins__"])
+        self.assertIn("Box", ns)
+        self.assertIn("fillet", ns)
+
+    def test_print_output_is_captured(self):
+        r = self.run_code("from build123d import *\nprint('wall =', 2.4)\nresult = Box(1, 1, 1)")
+        self.assertTrue(r["ok"], r)
+        self.assertIn("wall = 2.4", r["stdout"])
+
+    def test_main_writes_result_json_and_sets_the_exit_code(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            job = os.path.join(tmp, "job.json")
+            out = os.path.join(tmp, "out")
+            with open(job, "w", encoding="utf-8") as f:
+                json.dump({"code": "import os", "out_dir": out}, f)
+            import sys
+            argv, sys.argv = sys.argv, ["runner.py", job]
+            try:
+                self.assertEqual(runner.main(), 1)
+            finally:
+                sys.argv = argv
+            with open(os.path.join(out, "result.json"), encoding="utf-8") as f:
+                self.assertEqual(json.load(f)["stage"], "validate")
+
+
+@unittest.skipUnless(HAVE_B123D, "build123d not installed")
+class ServeModeTests(unittest.TestCase):
+    """常驻模式:一个进程连续跑多个任务。"""
+
+    def setUp(self):
+        import subprocess
+        import sys
+        self.tmp = tempfile.TemporaryDirectory()
+        here = os.path.dirname(os.path.abspath(runner.__file__))
+        self.proc = subprocess.Popen(
+            [sys.executable, "-I", "-B", "-X", "utf8", os.path.join(here, "runner.py"), "--serve"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding="utf-8", cwd=self.tmp.name)
+        ready = self.proc.stdout.readline()
+        self.assertIn(runner.SENTINEL + "READY", ready)
+        self.assertRegex(ready.strip(), r"READY \d+\.\d+\.\d+ \d+\.\d+")
+
+    def tearDown(self):
+        self.proc.stdin.close()
+        self.assertEqual(self.proc.wait(timeout=20), 0, "stdin 一关,常驻进程就该自己退出")
+        self.proc.stdout.close()
+        self.tmp.cleanup()
+
+    def job(self, seq, code):
+        out = os.path.join(self.tmp.name, f"job-{seq}")
+        self.proc.stdin.write(json.dumps({"seq": seq, "code": code, "out_dir": out, "exports": ["stl"], "timeout_s": 60}) + "\n")
+        self.proc.stdin.flush()
+        while True:
+            line = self.proc.stdout.readline()
+            self.assertTrue(line, "常驻进程意外退出")
+            if runner.SENTINEL + f"DONE {seq}" in line:
+                break
+        with open(os.path.join(out, "result.json"), encoding="utf-8") as f:
+            return json.load(f)
+
+    def test_jobs_run_back_to_back_and_a_failure_does_not_kill_the_worker(self):
+        first = self.job(1, "from build123d import *\nprint('hello')\nresult = Box(10, 20, 30)")
+        self.assertTrue(first["ok"], first)
+        self.assertEqual([round(v) for v in first["metrics"]["size"]], [10, 20, 30])
+        self.assertIn("hello", first["stdout"], "用户的 print 进结果,不能混进协议行")
+
+        broken = self.job(2, "from build123d import *\nresult = fillet(Box(10, 10, 10).edges(), radius=50)")
+        self.assertFalse(broken["ok"])
+        self.assertEqual(broken["stage"], "exec")
+
+        refused = self.job(3, "import os\nresult = 1")
+        self.assertEqual(refused["stage"], "validate")
+
+        # 前面任务里的名字带不到后面:每个任务都是全新的命名空间
+        leaked = self.job(4, "from build123d import *\nsecret = 42\nresult = Box(1, 1, 1)")
+        self.assertTrue(leaked["ok"])
+        after = self.job(5, "from build123d import *\nresult = Box(secret, 1, 1)")
+        self.assertFalse(after["ok"])
+        self.assertEqual(after["error_type"], "NameError")
+
+        again = self.job(6, "from build123d import *\nresult = Cylinder(5, 10)")
+        self.assertTrue(again["ok"], again)
+        self.assertLess(again["elapsed_ms"], 2000, "热进程里建一个圆柱不该再花几秒")
+
+
+if __name__ == "__main__":
+    unittest.main()

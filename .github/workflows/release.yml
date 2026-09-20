@@ -1,0 +1,196 @@
+# 发版:推一个 v* 标签 → 三个安装包(Windows x64 · macOS Apple 芯片 · macOS Intel)→ GitHub Release。
+#
+#   git tag v0.9.0 && git push origin v0.9.0
+#
+# 「单个安装包、用户零安装」:建模引擎(内嵌 CPython + build123d)在这里现场构建、跑完它自己的测试,
+# 然后作为一个压缩文件打进安装包;应用第一次用到代码建模时自己解开(src-tauri/src/engine_pack.rs)。
+#
+# 发布是原子的:先建草稿 → 三个平台各自上传 → **全部成功**才转为正式发布。任何一个平台失败,用户看不到半成品。
+# 手动触发(workflow_dispatch)只构建、不发布——用来验证 macOS 能不能编过,产物在这次运行的 Artifacts 里(保留 3 天)。
+#
+# 还没做的(需要负责人提供证书,做了之后在这里加环境变量即可,Tauri 会自动用):
+#   - Windows 代码签名(没签名时 SmartScreen 会提示「未知发布者」)
+#   - macOS Developer ID 签名 + 公证(现在是 ad-hoc 签名,首次打开要右键 →「打开」)
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  TRUNK_VERSION: 0.21.14
+  TAURI_CLI_VERSION: 2.10.1
+
+jobs:
+  draft:
+    name: Create the draft release
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag must match the app version
+        run: |
+          version=$(python3 -c "import json; print(json.load(open('src-tauri/tauri.conf.json'))['version'])")
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match tauri.conf.json version $version"
+            exit 1
+          fi
+      - name: Create draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          notes="docs/releases/$GITHUB_REF_NAME.md"
+          if [ -f "$notes" ]; then
+            gh release create "$GITHUB_REF_NAME" --draft --title "PrintPilot $GITHUB_REF_NAME" --notes-file "$notes"
+          else
+            gh release create "$GITHUB_REF_NAME" --draft --title "PrintPilot $GITHUB_REF_NAME" --generate-notes
+          fi
+
+  build:
+    name: ${{ matrix.label }}
+    needs: [draft]
+    # 手动触发时没有 draft 这一步(被跳过),照样要构建
+    if: always() && (needs.draft.result == 'success' || needs.draft.result == 'skipped')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Windows x64
+            os: windows-latest
+            platform: windows-x86_64
+            target: x86_64-pc-windows-msvc
+            bundles: nsis
+            asset: windows_x64-setup.exe
+          - label: macOS Apple silicon
+            os: macos-latest
+            platform: macos-aarch64
+            target: aarch64-apple-darwin
+            bundles: dmg
+            asset: macos_apple-silicon.dmg
+          # Intel 版也在 Apple 芯片的机器上出:Rust 直接交叉编译;引擎包里的 x86_64 Python 经 Rosetta 运行
+          - label: macOS Intel
+            os: macos-latest
+            platform: macos-x86_64
+            target: x86_64-apple-darwin
+            bundles: dmg
+            asset: macos_intel.dmg
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      # ---- 1. 建模引擎包 ----
+      - name: Restore the engine pack
+        id: engine-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            src-tauri/resources/cad-engine/cad-engine.tar.zst
+            src-tauri/resources/cad-engine/cad-engine.json
+          # 内容只取决于这三样;应用代码怎么改都不用重建引擎
+          key: engine-pack-${{ matrix.platform }}-${{ hashFiles('scripts/build-engine-pack.py', 'scripts/engine/constraints.txt', 'crates/pp-cad/py/**') }}
+
+      - uses: actions/setup-python@v5
+        if: steps.engine-cache.outputs.cache-hit != 'true'
+        with:
+          python-version: '3.12'
+
+      - name: Rosetta (to run the x86_64 Python of the Intel engine pack)
+        if: steps.engine-cache.outputs.cache-hit != 'true' && matrix.platform == 'macos-x86_64'
+        run: softwareupdate --install-rosetta --agree-to-license || true
+
+      - name: Build and test the engine pack
+        if: steps.engine-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          python -m pip install --disable-pip-version-check zstandard
+          python scripts/build-engine-pack.py --platform ${{ matrix.platform }}
+
+      - name: Engine pack manifest
+        shell: bash
+        run: cat src-tauri/resources/cad-engine/cad-engine.json
+
+      # ---- 2. 应用 ----
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown,${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      # TLS 用的 aws-lc 在 Windows 上要 NASM 编汇编(没有时会退回预编译的目标文件,装上更稳)
+      - uses: ilammy/setup-nasm@v1
+        if: runner.os == 'Windows'
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-binstall
+
+      - name: Install trunk and the Tauri CLI
+        shell: bash
+        run: cargo binstall --no-confirm --force trunk@${{ env.TRUNK_VERSION }} tauri-cli@${{ env.TAURI_CLI_VERSION }}
+
+      - name: Build the installer
+        shell: bash
+        run: cargo tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} --ci
+
+      - name: Collect the installer
+        id: collect
+        shell: bash
+        run: |
+          version=$(python3 -c "import json; print(json.load(open('src-tauri/tauri.conf.json'))['version'])" 2>/dev/null \
+                 || python -c "import json; print(json.load(open('src-tauri/tauri.conf.json'))['version'])")
+          case "${{ matrix.bundles }}" in
+            nsis) found=$(ls target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe | head -n 1) ;;
+            dmg)  found=$(ls target/${{ matrix.target }}/release/bundle/dmg/*.dmg | head -n 1) ;;
+          esac
+          out="PrintPilot_${version}_${{ matrix.asset }}"
+          mkdir -p release-assets
+          cp "$found" "release-assets/$out"
+          ls -la release-assets
+          echo "file=release-assets/$out" >> "$GITHUB_OUTPUT"
+
+      - name: Upload to the draft release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" "${{ steps.collect.outputs.file }}" --clobber
+
+      - name: Keep as a workflow artifact (manual runs)
+        if: "!startsWith(github.ref, 'refs/tags/v')"
+        uses: actions/upload-artifact@v4
+        with:
+          name: PrintPilot-${{ matrix.platform }}
+          path: ${{ steps.collect.outputs.file }}
+          retention-days: 3
+          compression-level: 0
+
+  publish:
+    name: Publish
+    needs: [build]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checksums, then flip the draft to published
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          mkdir assets && cd assets
+          gh release download "$GITHUB_REF_NAME" --pattern 'PrintPilot_*'
+          sha256sum PrintPilot_* > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          gh release upload "$GITHUB_REF_NAME" SHA256SUMS.txt --clobber
+          gh release edit "$GITHUB_REF_NAME" --draft=false --latest

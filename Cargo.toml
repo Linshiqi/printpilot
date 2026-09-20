@@ -1,0 +1,85 @@
+[package]
+name = "printpilot-ui"
+version = "0.9.0"
+edition = "2021"
+
+# 根包 = 前端(Leptos CSR,编译到 wasm);后端在 src-tauri,共享与领域代码在 crates/。
+# 布局与版本刻意对齐 E:\velo(同栈的已发布工程),便于直接对照与复制。
+[dependencies]
+leptos = { version = "0.7", features = ["csr"] }
+# 国际化:编译期从 locales/*.json 生成强类型 API,漏翻/键名拼错都是编译错误
+leptos_i18n = { version = "0.5", default-features = false, features = [
+    "csr",
+    "json_files",
+    "interpolate_display",
+] }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde-wasm-bindgen = "0.6"
+console_error_panic_hook = "0.1.7"
+pp-common = { path = "crates/pp-common" }
+web-sys = { version = "0.3", features = [
+    "Window",
+    "Document",
+    "Element",
+    "HtmlElement",
+    "HtmlInputElement",
+    "HtmlTextAreaElement",
+    "HtmlSelectElement",
+    "Node",
+    "Storage",
+    "Location",
+    "Navigator",
+    "Clipboard",
+    # 启动耗时埋点(performance.now())
+    "Performance",
+    # 未捕获异常上报(main.rs::install_error_reporter)
+    "ErrorEvent",
+    "PromiseRejectionEvent",
+    "Event",
+    "EventTarget",
+    "KeyboardEvent",
+    "MouseEvent",
+    # 看板拖拽走指针事件而不是 HTML5 DnD(pointer_drag.rs,照搬 velo)
+    "PointerEvent",
+    "DomRect",
+    "DomTokenList",
+    "MediaQueryList",
+    "CssStyleDeclaration",
+] }
+
+# leptos_i18n 的 locale 配置:默认中文,翻译文件在 ./locales/{locale}.json
+[package.metadata.leptos-i18n]
+default = "zh"
+locales = ["zh", "en"]
+
+[workspace]
+members = [
+    "src-tauri",
+    "crates/pp-common",
+    "crates/pp-db",
+    "crates/pp-geometry",
+    "crates/pp-providers",
+    "crates/pp-agent",
+    "crates/pp-cad",
+]
+
+# ⚠️ 以下 profile 设置来自 velo 的实测教训,改之前先读 docs/adr/0001-tech-stack.md:
+# - dev 只去调试信息,**绝不给 wasm 开 opt-level**(>0 会触发跨 CGU 局部 ThinLTO,
+#   wasm 模块实例化失败,界面永远停在启动转圈,且时灵时不灵)。
+# - 发布打包走 `trunk build --cargo-profile release`(见 tauri.conf.json),不要 `--release`:
+#   后者会跑 wasm-opt,而 binaryen 拒收 rustc 默认发的 bulk-memory 指令。
+[profile.dev.package."*"]
+debug = false
+
+[profile.dev.package.printpilot-ui]
+debug = false
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = "symbols"

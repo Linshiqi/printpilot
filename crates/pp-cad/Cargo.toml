@@ -1,0 +1,11 @@
+[package]
+name = "pp-cad"
+version = "0.1.0"
+edition = "2021"
+description = "代码式 CAD:定位 build123d 引擎、在子进程里安全地执行建模代码、解析与修改参数。"
+
+[dependencies]
+pp-common = { path = "../pp-common" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = "0.4"

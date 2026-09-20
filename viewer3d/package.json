@@ -1,0 +1,17 @@
+{
+  "name": "printpilot-viewer3d",
+  "private": true,
+  "version": "0.1.0",
+  "description": "把 three.js 和用到的加载器打成一个 ESM 文件(public/viewer3d/three-bundle.mjs)。产物提交入库,平时构建应用不需要 Node;只有升级 three.js 或增减导出时才重新跑这里。",
+  "type": "module",
+  "scripts": {
+    "build": "esbuild src/three-entry.js --bundle --format=esm --minify --target=es2022 --legal-comments=eof --outfile=../public/viewer3d/three-bundle.mjs"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["esbuild"]
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "three": "^0.170.0"
+  }
+}

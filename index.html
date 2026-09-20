@@ -1,0 +1,18 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>PrintPilot</title>
+    <link data-trunk rel="tailwind-css" href="style/input.css" />
+    <link data-trunk rel="copy-dir" href="public" />
+    <link data-trunk rel="rust" />
+    <!-- 启动占位(转圈)。动画样式在 style/input.css 的 #boot-splash 段。
+         ⚠️ **这里绝不能写内联 <style> 块**(velo 2026-08 实测踩坑):Tauri 打包时的 CSP 处理器
+         一见到内联样式块,就往 style-src 里补 nonce,而 CSP 规范规定 nonce 在场时
+         'unsafe-inline' 被忽略 —— 于是全应用的 style="…" 属性(Leptos 一切 style:xxx=move||
+         的输出)全部被拦。dev(trunk serve)不注入 CSP,所以这个坑只在打包版爆发。
+         下面的**内联 style 属性**是允许的(属性走 'unsafe-inline',不触发 nonce):它给
+         「dev 首次编译、带哈希的 css 还没到位」那一会儿兜底,不至于一片纯白。 -->
+  </head>
+  <body><div id="boot-splash" style="position:fixed;inset:0;display:flex;align-items:center;justify-content:center"><i style="width:28px;height:28px;border-radius:9999px;display:block;border:3px solid rgba(125,133,148,.25);border-top-color:rgba(125,133,148,.85)"></i></div></body>
+</html>

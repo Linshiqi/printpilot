@@ -1,0 +1,61 @@
+# 建模引擎包的依赖版本锁(scripts/build-engine-pack.py 用 `pip install -c` 读它)。
+# 来源:开发机上跑通了全部测试的那个环境的 `pip freeze`(build123d 0.12.0 / OCP 7.9.3)。
+# 升级 build123d:先在开发机上装新版本、跑 crates/pp-cad/py 的测试(速查表那组会告诉你哪些 API 变了),
+# 通过后重新 freeze 覆盖本文件,并把 build-engine-pack.py 里的 ENGINE_VERSION 加一。
+# 平台专属的包(如 colorama 只在 Windows 上装)由 pip 按环境标记自己取舍,这里列着不碍事。
+anytree==2.13.0
+asttokens==3.0.2
+bd_materials==0.2.4
+build123d==0.12.0
+cadquery-ocp-novtk==7.9.3.1.1
+cadquery-ocp-proxy==7.9.3.1.1
+certifi==2026.7.22
+charset-normalizer==3.5.1
+cloudpickle==3.1.2
+colorama==0.4.6
+dataclasses-json==0.6.7
+decorator==5.3.1
+Deprecated==1.3.1
+exceptiongroup==1.3.1
+executing==2.2.1
+ezdxf==1.4.4
+fonttools==4.65.0
+idna==3.20
+ipython==8.39.0
+jedi==0.20.0
+joblib==1.6.0
+lib3mf==2.5.0
+marshmallow==3.26.2
+matplotlib-inline==0.2.2
+mpmath==1.3.0
+mypy_extensions==1.1.0
+numpy==2.2.6
+ocp_gordon==0.2.2
+ocpsvg==0.6.0
+packaging==26.3
+parso==0.8.7
+pillow==12.2.0
+platformdirs==4.11.11
+prompt_toolkit==3.0.53
+pure_eval==0.2.4
+pygltflib==1.16.5
+Pygments==2.21.0
+pyparsing==3.3.2
+requests==2.34.2
+scikit-learn==1.7.2
+scipy==1.15.3
+stack-data==0.6.3
+svgelements==1.9.6
+svgpathtools==1.8.0
+svgwrite==1.4.3
+sympy==1.14.0
+threadpoolctl==3.7.0
+threejs-materials==1.2.3
+traitlets==5.16.1
+trianglesolver==1.2
+typing-inspect==0.9.0
+typing_extensions==4.16.0
+urllib3==2.8.0
+wcwidth==0.8.4
+webcolors==24.8.0
+wrapt==2.4.1

@@ -1,0 +1,17 @@
+[build]
+target = "./index.html"
+
+[watch]
+ignore = ["./src-tauri", "./crates/pp-db", "./crates/pp-geometry", "./crates/pp-providers", "./crates/pp-agent", "./docs", "./viewer3d", "./scripts"]
+
+[serve]
+# 刻意不用 Tauri 模板的默认端口 1420,也不用它附近的 1421~1430——本机有多个 Tauri 工程,那一带最容易撞。
+# 这个值必须和 src-tauri/tauri.conf.json 的 devUrl 一致(有单测守着)。
+# 万一 17431 也被占了:scripts/dev.ps1 会自动顺延到下一个空闲端口,并用 --config 覆盖 devUrl,不用改这里。
+port = 17431
+open = false
+
+[tools]
+# 钉死 Tailwind 的版本:本机 PATH 里有同版本就直接用,没有(CI、新机器)Trunk 会自己下载这个版本。
+# 不钉的话 Trunk 会下它内置的默认版本,而 style/input.css 用的是 v4 的语法(@theme)。
+tailwindcss = "4.3.0"
