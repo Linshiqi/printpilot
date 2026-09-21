@@ -119,3 +119,93 @@ pub fn Toggle(
         </button>
     }
 }
+
+fn parse_number(text: &str) -> Option<f64> {
+    text.trim().parse::<f64>().ok().filter(|v| v.is_finite() && *v >= 0.0)
+}
+
+fn format_number(v: f64, decimals: usize) -> String {
+    let s = format!("{v:.decimals$}");
+    if s.contains('.') {
+        s.trim_end_matches('0').trim_end_matches('.').to_string()
+    } else {
+        s
+    }
+}
+
+/// 数字输入,直接绑一个 `f64` 信号(成本定价器里有二十来个这样的格子)。
+/// - `scale`:显示值 = 信号值 × scale。百分比用 100:信号里是 0.05,格子里显示 5;
+/// - 每敲一个能解析的数就写回信号(定价页靠它「改任一参数即时重算」);敲到一半的(空、`1.`)不写;
+/// - 外面改了信号(带入档案、用实际值)→ 格子跟着变;自己输入引起的变化不回写,否则光标会跳;
+/// - 失焦时把格子里的字规整成信号里的值。
+///
+/// ⚠️ 信号 ↔ 文字是两个方向的同步:都必须「不一样才写」,见 CLAUDE.md 里那条互相镜像的 Effect 的坑。
+#[component]
+pub fn NumInput(
+    value: RwSignal<f64>,
+    #[prop(default = 1.0)] scale: f64,
+    #[prop(default = 2)] decimals: usize,
+    /// 格子右边的单位(g、h、¥、% …)
+    #[prop(optional, into)]
+    unit: Option<TextProp>,
+) -> impl IntoView {
+    let shown = move |v: f64| format_number(v * scale, decimals);
+    let text = RwSignal::new(shown(value.get_untracked()));
+    Effect::new(move |_| {
+        let v = value.get();
+        let same = text.with_untracked(|t| parse_number(t)).is_some_and(|typed| (typed / scale - v).abs() < 1e-9);
+        if !same {
+            text.set(shown(v));
+        }
+    });
+    view! {
+        <div class="relative">
+            <input
+                type="text"
+                inputmode="decimal"
+                autocomplete="off"
+                spellcheck="false"
+                class=format!("{INPUT} h-8 tabular-nums {}", if unit.is_some() { "pr-9" } else { "" })
+                prop:value=move || text.get()
+                on:input=move |e| {
+                    let raw = event_target_value(&e);
+                    if let (Some(typed), Some(current)) = (parse_number(&raw), value.try_get_untracked()) {
+                        let v = typed / scale;
+                        if (v - current).abs() > 1e-12 {
+                            value.set(v);
+                        }
+                    }
+                    let _ = text.try_set(raw);
+                }
+                on:blur=move |_| {
+                    // 对话框 / 页面关掉时,正聚焦的格子会在被移除的瞬间收到 blur——那时信号已经随作用域销毁了,
+                    // 直接 get 会 panic。所以这里用 try_ 系列:信号没了就什么都不做
+                    if let Some(v) = value.try_get_untracked() {
+                        let _ = text.try_set(shown(v));
+                    }
+                }
+            />
+            {unit.map(|u| view! {
+                <span class="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-xs text-gray-400">{move || u.get().to_string()}</span>
+            })}
+        </div>
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn numbers_are_shown_without_trailing_zeros_and_parsed_leniently() {
+        assert_eq!(format_number(27.0, 2), "27");
+        assert_eq!(format_number(1.70, 2), "1.7");
+        assert_eq!(format_number(0.05 * 100.0, 2), "5");
+        assert_eq!(format_number(29.9, 2), "29.9");
+        assert_eq!(format_number(100.0, 0), "100", "没有小数点时不能把整数末尾的 0 删掉");
+        assert_eq!(parse_number(" 1. "), Some(1.0), "敲到一半的 1. 也算数");
+        assert_eq!(parse_number(""), None);
+        assert_eq!(parse_number("-3"), None, "成本里没有负数");
+        assert_eq!(parse_number("abc"), None);
+    }
+}

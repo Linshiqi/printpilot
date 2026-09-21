@@ -22,6 +22,6 @@ pub use button::{Button, ButtonVariant, IconButton};
 pub use card::{Card, SectionTitle};
 pub use dialog::{Dialog, DialogFooter, Drawer};
 pub use empty::EmptyState;
-pub use field::{Field, TextArea, TextInput, Toggle};
+pub use field::{Field, NumInput, TextArea, TextInput, Toggle};
 pub use tabs::Segmented;
 pub use toast::Toasts;

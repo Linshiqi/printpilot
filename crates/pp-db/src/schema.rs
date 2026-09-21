@@ -9,7 +9,7 @@
 use rusqlite::Connection;
 
 /// 每加一段迁移就 +1。**已发布版本的迁移段不可修改**,只能追加。
-pub const SCHEMA_VERSION: u32 = 4;
+pub const SCHEMA_VERSION: u32 = 5;
 
 pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     let ver: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
@@ -30,9 +30,27 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     if ver < 4 {
         conn.execute_batch(V4)?;
     }
+    if ver < 5 {
+        // 加列不是幂等的:升级到一半被打断(加了列、还没写回版本号),下次启动会再跑一遍——所以先看有没有
+        add_column_if_missing(conn, "print_runs", "deleted_at", "INTEGER")?;
+        conn.execute_batch(V5)?;
+    }
     if ver != SCHEMA_VERSION {
         conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
         log::info!("[db] schema {ver} → {SCHEMA_VERSION}");
+    }
+    Ok(())
+}
+
+/// `ALTER TABLE … ADD COLUMN`,但列已经在了就什么都不做(迁移被打断后重跑时用)。
+fn add_column_if_missing(conn: &Connection, table: &str, column: &str, decl: &str) -> rusqlite::Result<()> {
+    let exists: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2",
+        [table, column],
+        |r| r.get(0),
+    )?;
+    if exists == 0 {
+        conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {decl};"))?;
     }
     Ok(())
 }
@@ -358,6 +376,19 @@ CREATE TABLE IF NOT EXISTS image_messages (
 CREATE INDEX IF NOT EXISTS idx_image_messages_board ON image_messages(board_id, created_at);
 "#;
 
+/// v5:成本定价器(M4)。打印机 / 耗材 / 打样记录 / 成本模型这几张表 v1 就建好了,这里只补两样:
+/// 打样记录可以删(软删除,和别处一致);每个资料库一份「成本默认值」(电价、人工、包装…,存成一行 JSON)。
+/// (`print_runs.deleted_at` 这一列在 `migrate` 里单独加:加列不是幂等的,要先看有没有。)
+const V5: &str = r#"
+CREATE INDEX IF NOT EXISTS idx_print_runs_project ON print_runs(project_id, created_at);
+
+CREATE TABLE IF NOT EXISTS library_settings (
+    key        TEXT PRIMARY KEY,
+    value_json TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+"#;
+
 /// 一次性数据回填是否做过(velo 做法)。
 pub fn migration_done(conn: &Connection, name: &str) -> rusqlite::Result<bool> {
     let n: i64 = conn.query_row(
@@ -395,7 +426,37 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(tables, 20);
+        assert_eq!(tables, 21);
+    }
+
+    #[test]
+    fn a_0_9_3_database_gains_the_pricing_bits_even_if_the_upgrade_was_interrupted_once() {
+        // 0.9.2 / 0.9.3 发出去的库是 v4
+        let conn = Connection::open_in_memory().unwrap();
+        for sql in [V1, V2, V3, V4] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.execute_batch("PRAGMA user_version = 4;").unwrap();
+        conn.execute(
+            "INSERT INTO projects(id, code, title, stage, stage_entered_at, created_at, updated_at) VALUES ('p1', 'PP-0001', 't', 'prototype', 0, 0, 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute("INSERT INTO print_runs(id, project_id, result, created_at) VALUES ('r1', 'p1', 'success', 0)", []).unwrap();
+        // 模拟「上次升级加完列就被打断了」:列已经在,版本号还是 4
+        conn.execute_batch("ALTER TABLE print_runs ADD COLUMN deleted_at INTEGER;").unwrap();
+
+        migrate(&conn).unwrap();
+
+        let ver: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(ver, SCHEMA_VERSION);
+        let deleted: Option<i64> = conn.query_row("SELECT deleted_at FROM print_runs WHERE id = 'r1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(deleted, None, "旧的打样记录留着,没有被当成已删除");
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sqlite_master WHERE name = 'library_settings'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1);
+        migrate(&conn).unwrap(); // 再跑一遍也没事
     }
 
     #[test]

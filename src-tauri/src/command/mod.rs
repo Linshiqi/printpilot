@@ -7,6 +7,7 @@ pub mod asset;
 pub mod cad;
 pub mod design;
 pub mod imagery;
+pub mod pricing;
 pub mod mesh;
 pub mod project;
 pub mod provider;

@@ -193,7 +193,7 @@ impl Db {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::testutil::TempDb;
     use pp_common::research::{EvidenceGrade, IpRisk, ModelRoute, Scores};
@@ -221,7 +221,8 @@ mod tests {
         }
     }
 
-    fn sample() -> (ResearchBrief, ResearchReport) {
+    /// 别的仓储测试(定价)也用这份样例
+    pub(crate) fn sample() -> (ResearchBrief, ResearchReport) {
         let brief: ResearchBrief = serde_json::from_str(r#"{ "topic": " 桌面收纳 " }"#).unwrap();
         let report = ResearchReport {
             summary_md: "需求稳定 [1]".into(),

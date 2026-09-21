@@ -60,6 +60,7 @@ Rust + Tauri 2 + Leptos 0.7（CSR）+ Trunk 0.21 + Tailwind v4 + leptos_i18n 0.5
 - **别在 bash heredoc 里写带反斜杠转义的 Python 字符串**（`
 `、`\d`）：到 Python 手里已经被吃掉一层，写出去的文件里变成真换行。改这类内容用编辑工具，或者用 `chr(10)` / `chr(92)` 拼。
 - **两个互相镜像的 `Effect` 必须「值不一样才写」**：Leptos 的 `set` 不管值变没变都会通知订阅者。`A 变了 → 写 B`、`B 变了 → 写 A` 这一对如果无条件地写，就是一个死循环——界面线程被占满，窗口卡死，连 DevTools（`cdp.py`）都连不上（表现为 `Runtime.enable` 超时）。项目抽屉的开关同步（`project_drawer.rs`）踩过。
+- **`on:blur` 里读信号要用 `try_` 系列**（`try_get_untracked` / `try_set`）：对话框或页面关掉时，正聚焦的输入框会在被移除的瞬间收到 `blur`，而那时它的信号已经随作用域销毁了——直接 `get` 会 panic（`…has already been disposed`）。`NumInput` 和两处重命名输入框踩过。同理：`For` 的 `key` 要包含**会变的显示内容**，键没变的行不会重画（三档建议价曾因此显示旧毛利）。
 
 ## 常用命令
 
@@ -117,11 +118,22 @@ cargo tauri build --bundles nsis                  # 本机出 Windows 安装包(
 
 设计见 `docs/adr/0006-project-spine.md`。动之前要知道的：
 
-- 三个工作台（调研 `Route::Ideas` / 图片 / 建模）都能独立用，也都能**从项目里发起**：产出挂在项目名下（`project_id`），输入框里先放一句由项目信息拼的草稿。跳转时带的东西走 `AppState.handoff`（目标页面挂载时取走，只用一次），发起动作在 `controller/project.rs`。
+- 工作台（调研 `Route::Ideas` / 图片 / 建模；定价 `Route::Pricing` 只能按项目用）都能独立用，也都能**从项目里发起**：产出挂在项目名下（`project_id`），输入框里先放一句由项目信息拼的草稿。跳转时带的东西走 `AppState.handoff`（目标页面挂载时取走，只用一次），发起动作在 `controller/project.rs`。
 - **阶段门清单是从产出里算出来的**，不是手工打勾：规则全在 `pp_common::gate`（纯函数，前后端共用）。新增一个阶段的清单 = 在 `ProjectFacts` 里加计数（`pp-db/src/overview.rs` 里数出来）+ `stage_gate` 加分支 + `GateKey` 的文案。**空清单 = 没法自动判断，不是完成了。**
 - **要不要写「跳过原因」由后端按证据判**（`move_project_stage`）：前端会先问，但不要相信前端——`stage_events.forced` 是后端写的。
 - 工作台里做了可能改变清单的事（出图、采用、拿掉、建出模型、关联项目、调研完成、保存假设）之后要调 `state.reload_project_facts()`，否则看板卡片和中枢上的清单是旧的。
 - 不自动推进阶段：清单完成只是提示 + 一个按钮。
+
+## 成本定价器（M4）
+
+设计见 `docs/adr/0007-cost-pricing.md`。动之前要知道的：
+
+- **算钱的公式只有一份，在 `pp_common::cost`**（纯函数、有单测）。前端（`src/view/pricing/`）改参数时本地即时重算，后端（`command/pricing.rs`）只做存取、保存时用同一套公式算单位成本。**不要在前端或后端另写一遍公式。**
+- 金额：公式和界面里是「元」的小数；落库才换成整数「分」（`pp-db/src/pricing.rs` 的 `to_fen` / `to_yuan`）。
+- 一次成功率同时摊到**材料和机时**上（失败的打印同样占机器）；人工不摊。尾数价**只往上取**，所以三档建议价的实际毛利率一定 ≥ 目标。
+- 成本模型里存的是数，不是对打印机 / 耗材档案的引用：选档案 = 带入。改档案、改资料库默认值都不会悄悄改掉已经定好的价。
+- 「毛利率不到 50%」「每机时毛利不达标」「价格出了竞品价格带」是**提醒，不是阶段门**；阶段门只认事实（有成功的打样记录、定了价）。
+- 定价页的格子是 `NumInput`（`src/ui/field.rs`）；事件回调 / 定时器里读参数用 `params_untracked()`，响应式上下文里才用 `params()`。
 
 ## 图片工作台（出图 / 改图）
 

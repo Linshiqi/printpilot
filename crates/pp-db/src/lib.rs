@@ -9,6 +9,7 @@ mod costs;
 mod designs;
 mod imagery;
 mod overview;
+mod pricing;
 mod projects;
 mod research;
 pub mod schema;

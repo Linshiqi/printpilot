@@ -67,6 +67,15 @@ impl Db {
                 f.models = built;
             },
         )?;
+        // 打样与定价(M4):成功的打样次数、成本模型里定没定价
+        fill(
+            "SELECT project_id, COALESCE(SUM(result = 'success'), 0), 0 FROM print_runs WHERE deleted_at IS NULL GROUP BY project_id",
+            &|f, n, _| f.print_successes = n,
+        )?;
+        fill(
+            "SELECT project_id, (chosen_price IS NOT NULL AND chosen_price > 0), 0 FROM cost_models",
+            &|f, priced, _| f.has_price = priced > 0,
+        )?;
         Ok(out)
     }
 

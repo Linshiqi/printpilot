@@ -136,6 +136,19 @@ pub fn run() {
             command::imagery::board_send,
             command::imagery::board_to_design,
             command::imagery::board_export,
+            command::pricing::printer_list,
+            command::pricing::printer_save,
+            command::pricing::printer_delete,
+            command::pricing::material_list,
+            command::pricing::material_save,
+            command::pricing::material_delete,
+            command::pricing::cost_defaults_get,
+            command::pricing::cost_defaults_set,
+            command::pricing::pricing_get,
+            command::pricing::pricing_save,
+            command::pricing::pricing_summary,
+            command::pricing::print_run_add,
+            command::pricing::print_run_delete,
         ])
         .run(tauri::generate_context!())
         .expect("error while running PrintPilot");

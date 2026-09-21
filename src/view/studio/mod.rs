@@ -393,7 +393,9 @@ pub fn StudioView(state: AppState) -> impl IntoView {
 
     // ---- 设计的管理 ----
     let rename = move || {
-        let (Some(id), Some(name)) = (design_id(), renaming.get_untracked()) else { return };
+        // 页面被切走时,正聚焦的输入框会在移除的瞬间收到 blur——那时这些信号已经销毁了(直接读会 panic)
+        let Some(Some(name)) = renaming.try_get_untracked() else { return };
+        let Some(id) = design_id() else { return };
         renaming.set(None);
         if name.trim().is_empty() {
             return;

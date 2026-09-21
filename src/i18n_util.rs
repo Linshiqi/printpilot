@@ -77,6 +77,8 @@ pub fn gate_label(l: Locale, key: GateKey) -> &'static str {
         GateKey::Research => td_string!(l, project.gate_research),
         GateKey::AdoptedImage => td_string!(l, project.gate_adopted_image),
         GateKey::Model => td_string!(l, project.gate_model),
+        GateKey::PrintRun => td_string!(l, project.gate_print_run),
+        GateKey::Price => td_string!(l, project.gate_price),
     }
 }
 

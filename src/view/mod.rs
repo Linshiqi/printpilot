@@ -4,6 +4,7 @@ pub mod board;
 pub mod imagery;
 pub mod lab;
 pub mod placeholder;
+pub mod pricing;
 pub mod project_drawer;
 pub mod research;
 pub mod settings;

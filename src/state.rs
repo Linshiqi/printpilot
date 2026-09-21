@@ -20,6 +20,8 @@ pub enum Route {
     Images,
     /// 建模工作室(看图 → 代码建模,对话式修改)
     Studio,
+    /// 打样与定价(成本模型、三档建议价、打样记录)
+    Pricing,
     Ideas,
     Calendar,
     Orders,
@@ -35,6 +37,7 @@ impl Route {
             Route::Projects => "projects",
             Route::Images => "images",
             Route::Studio => "studio",
+            Route::Pricing => "pricing",
             Route::Ideas => "ideas",
             Route::Calendar => "calendar",
             Route::Orders => "orders",
@@ -50,6 +53,7 @@ impl Route {
             Route::Projects,
             Route::Images,
             Route::Studio,
+            Route::Pricing,
             Route::Ideas,
             Route::Calendar,
             Route::Orders,
@@ -109,6 +113,8 @@ pub enum Handoff {
     Board { board_id: String, draft: String },
     /// 去「建模」:打开这个设计,输入框里先放一句草稿(可以为空)
     Design { design_id: String, draft: String },
+    /// 去「定价」:打开这个项目的成本模型
+    Pricing { project_id: String },
 }
 
 #[derive(Copy, Clone)]
@@ -238,6 +244,7 @@ mod tests {
             Route::Projects,
             Route::Images,
             Route::Studio,
+            Route::Pricing,
             Route::Ideas,
             Route::Calendar,
             Route::Orders,

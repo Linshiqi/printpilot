@@ -255,6 +255,11 @@ impl ProjectController {
         });
     }
 
+    /// 去「定价」:打样记录、成本模型、三档建议价。
+    pub fn start_pricing(self, p: &Project) {
+        self.close_and_go(Handoff::Pricing { project_id: p.id.clone() }, Route::Pricing);
+    }
+
     pub fn open_design(self, design_id: String) {
         self.close_and_go(
             Handoff::Design {

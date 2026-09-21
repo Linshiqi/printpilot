@@ -4,6 +4,7 @@
 
 pub mod asset;
 pub mod cad;
+pub mod cost;
 pub mod design;
 pub mod errcode;
 pub mod gate;

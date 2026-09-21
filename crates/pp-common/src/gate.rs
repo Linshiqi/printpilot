@@ -3,7 +3,7 @@
 //!
 //! 清单只回答一个问题:「离开这个阶段之前,该有的东西有了吗?」有了 → 提示可以进入下一阶段;
 //! 没有 → 照样可以推进,但要写一句原因(`stage_events.forced`)——复盘时这是很值钱的数据。
-//! 打样之后的阶段(成本、上架、运营)的工具还没做出来,清单是空的,只能人工判断。
+//! 上架之后的阶段(发布、运营、复盘)的工具还没做出来,清单是空的,只能人工判断。
 
 use serde::{Deserialize, Serialize};
 
@@ -31,6 +31,12 @@ pub struct ProjectFacts {
     /// 已经建出模型的设计(有当前版本)
     #[serde(default)]
     pub models: u32,
+    /// 成功的打样记录
+    #[serde(default)]
+    pub print_successes: u32,
+    /// 成本模型里定了售价
+    #[serde(default)]
+    pub has_price: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -44,6 +50,10 @@ pub enum GateKey {
     AdoptedImage,
     /// 至少建出了一个模型
     Model,
+    /// 至少一次成功的打样记录
+    PrintRun,
+    /// 在成本定价器里定了售价
+    Price,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -54,13 +64,15 @@ pub struct GateItem {
 
 /// 离开 `stage` 之前该完成什么。空 = 这个阶段的工具还没做出来,只能人工判断。
 pub fn stage_gate(stage: Stage, facts: &ProjectFacts) -> Vec<GateItem> {
-    let item = |key, done| vec![GateItem { key, done }];
+    let item = |key, done| GateItem { key, done };
     match stage {
-        Stage::Idea => item(GateKey::Hypothesis, facts.has_hypothesis),
-        Stage::Research => item(GateKey::Research, facts.research_runs > 0),
-        Stage::Concept => item(GateKey::AdoptedImage, facts.adopted_images > 0),
-        Stage::Model => item(GateKey::Model, facts.models > 0),
-        Stage::Prototype | Stage::Listing | Stage::Operating | Stage::Review => Vec::new(),
+        Stage::Idea => vec![item(GateKey::Hypothesis, facts.has_hypothesis)],
+        Stage::Research => vec![item(GateKey::Research, facts.research_runs > 0)],
+        Stage::Concept => vec![item(GateKey::AdoptedImage, facts.adopted_images > 0)],
+        Stage::Model => vec![item(GateKey::Model, facts.models > 0)],
+        // 打样:真的打成过一次,并且算过账、定了价(成本定价器,M4)
+        Stage::Prototype => vec![item(GateKey::PrintRun, facts.print_successes > 0), item(GateKey::Price, facts.has_price)],
+        Stage::Listing | Stage::Operating | Stage::Review => Vec::new(),
     }
 }
 
@@ -153,6 +165,13 @@ mod tests {
         assert!(!gate_passed(Stage::Model, &f), "只有设计、还没建出模型,不算");
         f.models = 1;
         assert!(gate_passed(Stage::Model, &f));
+
+        // 打样要两样都有:打成过一次 + 定了价
+        f.print_successes = 1;
+        assert!(!gate_passed(Stage::Prototype, &f), "只打成了、还没定价,不算");
+        assert_eq!(unmet_on_the_way(Stage::Prototype, Stage::Listing, &f), vec![(Stage::Prototype, GateKey::Price)]);
+        f.has_price = true;
+        assert!(gate_passed(Stage::Prototype, &f));
     }
 
     #[test]
@@ -165,8 +184,10 @@ mod tests {
             adopted_images: 9,
             designs: 9,
             models: 9,
+            print_successes: 9,
+            has_price: true,
         };
-        for s in [Stage::Prototype, Stage::Listing, Stage::Operating, Stage::Review] {
+        for s in [Stage::Listing, Stage::Operating, Stage::Review] {
             assert!(stage_gate(s, &f).is_empty());
             assert!(!gate_passed(s, &f), "{s:?}:空清单是「没法判断」,不是「完成了」");
         }
@@ -198,11 +219,13 @@ mod tests {
             research_runs: 1,
             adopted_images: 1,
             models: 1,
+            print_successes: 1,
+            has_price: true,
             ..Default::default()
         };
-        assert!(!needs_reason(Stage::Model, Stage::Prototype, &f));
-        assert!(!needs_reason(Stage::Prototype, Stage::Listing, &f), "打样的工具还没做,顺着走不拦");
-        assert!(needs_reason(Stage::Model, Stage::Listing, &f), "整个跳过了打样");
+        assert!(!needs_reason(Stage::Model, Stage::Listing, &f), "打样的证据齐了,一次走两步也不拦");
+        assert!(!needs_reason(Stage::Listing, Stage::Operating, &f), "上架的工具还没做,顺着走不拦");
+        assert!(needs_reason(Stage::Prototype, Stage::Operating, &f), "整个跳过了上架(没法自动判断的阶段)");
     }
 
     #[test]

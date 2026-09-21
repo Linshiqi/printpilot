@@ -89,6 +89,20 @@ pub mod cmd {
     pub const BOARD_TO_DESIGN: &str = "board_to_design";
     pub const BOARD_EXPORT: &str = "board_export";
 
+    pub const PRINTER_LIST: &str = "printer_list";
+    pub const PRINTER_SAVE: &str = "printer_save";
+    pub const PRINTER_DELETE: &str = "printer_delete";
+    pub const MATERIAL_LIST: &str = "material_list";
+    pub const MATERIAL_SAVE: &str = "material_save";
+    pub const MATERIAL_DELETE: &str = "material_delete";
+    pub const COST_DEFAULTS_GET: &str = "cost_defaults_get";
+    pub const COST_DEFAULTS_SET: &str = "cost_defaults_set";
+    pub const PRICING_GET: &str = "pricing_get";
+    pub const PRICING_SAVE: &str = "pricing_save";
+    pub const PRICING_SUMMARY: &str = "pricing_summary";
+    pub const PRINT_RUN_ADD: &str = "print_run_add";
+    pub const PRINT_RUN_DELETE: &str = "print_run_delete";
+
     pub const OPEN_URL: &str = "plugin:opener|open_url";
 }
 

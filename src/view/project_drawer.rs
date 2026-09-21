@@ -9,6 +9,7 @@
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_i18n::t_string;
+use pp_common::cost::PricingSummary;
 use pp_common::gate::{gate_passed, stage_gate, ProjectOverview};
 use pp_common::{Project, ProjectStatus, Stage, StageEvent};
 
@@ -105,6 +106,17 @@ fn ProjectDetail(state: AppState, project_id: String) -> impl IntoView {
         });
     });
     state.reload_project_facts();
+    // 打样与定价的摘要:和产出一样,清单变了就重取
+    let pricing = RwSignal::new(PricingSummary::default());
+    Effect::new(move |_| {
+        let _facts = id.with_value(|id| state.facts_of(id));
+        let args = serde_json::json!({ "project_id": id.get_value() });
+        spawn_local(async move {
+            if let Ok(s) = ipc::call::<_, PricingSummary>(cmd::PRICING_SUMMARY, &args).await {
+                pricing.set(s);
+            }
+        });
+    });
 
     let show_kill = RwSignal::new(false);
     let show_delete = RwSignal::new(false);
@@ -133,6 +145,7 @@ fn ProjectDetail(state: AppState, project_id: String) -> impl IntoView {
     let start_research = move || with_project(&|p| ctl.start_research(p));
     let start_board = move || with_project(&|p| ctl.start_board(p));
     let start_design = move || with_project(&|p| ctl.start_design(p, adopted_image()));
+    let start_pricing = move || with_project(&|p| ctl.start_pricing(p));
 
     view! {
         <div class="flex items-center gap-2 flex-wrap">
@@ -242,6 +255,9 @@ fn ProjectDetail(state: AppState, project_id: String) -> impl IntoView {
                             <Button small=true variant=variant icon=IconKind::Box on_click=start_design>
                                 {move || if facts().adopted_images > 0 { t_string!(i18n, project.do_model_from_image) } else { t_string!(i18n, project.do_model) }}
                             </Button>
+                        }.into_any(),
+                        Stage::Prototype => view! {
+                            <Button small=true variant=variant icon=IconKind::Ruler on_click=start_pricing>{move || t_string!(i18n, project.do_pricing)}</Button>
                         }.into_any(),
                         _ => ().into_any(),
                     }
@@ -374,6 +390,40 @@ fn ProjectDetail(state: AppState, project_id: String) -> impl IntoView {
                     }
                 }).collect_view().into_any(),
             })}
+        </section>
+
+        <section class="space-y-2">
+            <div class="flex items-center justify-between">
+                <SectionTitle title=move || t_string!(i18n, project.work_pricing)/>
+                <Button small=true variant=ButtonVariant::Ghost icon=IconKind::Ruler on_click=start_pricing>{move || t_string!(i18n, project.do_pricing)}</Button>
+            </div>
+            {move || {
+                let s = pricing.get();
+                if s.unit_cost <= 0.0 && s.runs == 0 {
+                    return view! { <p class="text-xs text-gray-400">{move || t_string!(i18n, project.none_pricing)}</p> }.into_any();
+                }
+                let price = s.chosen_price.map(|p| format!("¥{p:.2}")).unwrap_or_else(|| "—".into());
+                view! {
+                    <button
+                        type="button"
+                        class="w-full grid grid-cols-3 gap-2 px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 text-center hover:border-brand transition-colors"
+                        on:click=move |_| start_pricing()
+                    >
+                        <div>
+                            <div class="text-sm font-semibold tabular-nums text-gray-900 dark:text-gray-50">{format!("¥{:.2}", s.unit_cost)}</div>
+                            <div class="text-[11px] text-gray-400">{move || t_string!(i18n, pricing.unit_cost)}</div>
+                        </div>
+                        <div>
+                            <div class="text-sm font-semibold tabular-nums text-gray-900 dark:text-gray-50">{price}</div>
+                            <div class="text-[11px] text-gray-400">{move || t_string!(i18n, pricing.your_price)}</div>
+                        </div>
+                        <div>
+                            <div class="text-sm font-semibold tabular-nums text-gray-900 dark:text-gray-50">{format!("{} / {}", s.successes, s.runs)}</div>
+                            <div class="text-[11px] text-gray-400">{move || t_string!(i18n, project.runs_ok)}</div>
+                        </div>
+                    </button>
+                }.into_any()
+            }}
         </section>
 
         <section class="space-y-3">
