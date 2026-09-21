@@ -16,16 +16,18 @@ use leptos::task::spawn_local;
 use leptos_i18n::{t_string, td_string};
 use pp_common::cad::{CadEngineInfo, CadPick, CadVersion, DesignSpec};
 use pp_common::design::{CadDesign, CadDesignDetail, CadDesignSummary, CadMessage, CadTier, CadTurnResult};
+use pp_common::imagery::{is_importable_image, IMPORT_EXTENSIONS};
 use pp_common::Asset;
 
 use crate::i18n::{use_i18n, Locale};
 use crate::i18n_util::current_locale;
 use crate::icon::{Icon, IconKind};
 use crate::ipc::{self, cmd};
-use crate::state::{AppState, Handoff};
+use crate::state::{AppState, DroppedFiles, Handoff};
 use crate::theme::{get_pref, set_pref, Theme};
 use crate::ui::{
-    basics, copy_entry, image_entries, item, separator, toggle, Badge, Button, ButtonVariant, Card, Dialog, DialogFooter, EmptyState, IconButton, Segmented, Toggle, Tone,
+    basics, copy_entry, image_entries, item, separator, toggle, Badge, Button, ButtonVariant, Card, Dialog, DialogFooter, EmptyState, FileDropHint, IconButton, Segmented,
+    Toggle, Tone,
 };
 use crate::utils::fmt_mm;
 use crate::viewer3d::{self, Pick, PickHandler};
@@ -300,24 +302,62 @@ pub fn StudioView(state: AppState) -> impl IntoView {
         text.set(said.clone());
         send_text(said);
     };
-    let attach = move || {
-        let Some(id) = design_id() else { return };
-        if pending_images.with_untracked(|l| l.len() >= MAX_IMAGES) {
+    // 贴图:「贴一张图」按钮选的,或者直接拖进窗口的。还没打开设计就先新建一个——「从一张图开始」本来就是建模的起点
+    let attach_paths = move |paths: Vec<String>| {
+        if busy.get_untracked() || paths.is_empty() {
             return;
         }
+        let open_id = design_id();
+        let room = MAX_IMAGES.saturating_sub(pending_images.with_untracked(Vec::len));
         // 还没有模型时贴的图就是参考图;有了模型之后贴的图随那句话走(后端会让视觉模型先描述它)
-        let as_reference = !has_model.get_untracked();
+        let as_reference = open_id.is_none() || !has_model.get_untracked();
+        if room < paths.len() {
+            state.notify_info(td_string!(current_locale(), studio.attach_full, max = MAX_IMAGES).to_string());
+        }
+        let take: Vec<String> = paths.into_iter().take(room).collect();
         spawn_local(async move {
-            let Some(path) = ipc::pick_file("Image", &["png", "jpg", "jpeg", "webp"]).await else {
-                return;
+            let id = match open_id {
+                Some(id) => id,
+                None => {
+                    let created = match ipc::call::<_, CadDesign>(cmd::DESIGN_CREATE, &serde_json::json!({ "name": null, "project_id": null })).await {
+                        Ok(d) => d,
+                        Err(e) => return state.notify_error(e),
+                    };
+                    match ipc::call::<_, CadDesignDetail>(cmd::DESIGN_GET, &serde_json::json!({ "id": created.id })).await {
+                        Ok(detail) => show_detail(detail),
+                        Err(e) => return state.notify_error(e),
+                    }
+                    reload_list();
+                    created.id
+                }
             };
-            let args = serde_json::json!({ "id": id, "path": path, "as_reference": as_reference });
-            match ipc::call::<_, Asset>(cmd::DESIGN_ADD_IMAGE, &args).await {
-                Ok(asset) => pending_images.update(|l| l.push(asset)),
-                Err(e) => state.notify_error(e),
+            for path in take {
+                let args = serde_json::json!({ "id": id, "path": path, "as_reference": as_reference });
+                match ipc::call::<_, Asset>(cmd::DESIGN_ADD_IMAGE, &args).await {
+                    Ok(asset) => pending_images.update(|l| l.push(asset)),
+                    Err(e) => state.notify_error(e),
+                }
             }
         });
     };
+    let attach = move || {
+        if design_id().is_none() || pending_images.with_untracked(|l| l.len() >= MAX_IMAGES) {
+            return;
+        }
+        spawn_local(async move {
+            if let Some(path) = ipc::pick_file("Image", &IMPORT_EXTENSIONS).await {
+                attach_paths(vec![path]);
+            }
+        });
+    };
+    state.accept_file_drops(move |dropped: DroppedFiles| {
+        let pictures: Vec<String> = dropped.paths.into_iter().filter(|p| is_importable_image(p)).collect();
+        if pictures.is_empty() {
+            state.notify_info(td_string!(current_locale(), imagery.drop_reject));
+        } else {
+            attach_paths(pictures);
+        }
+    });
     let generate = move |spec: DesignSpec| {
         let Some(id) = design_id() else { return };
         // 第一版用「精细」:规格 → 完整脚本是最难的一步,值得多花几十秒
@@ -738,6 +778,18 @@ pub fn StudioView(state: AppState) -> impl IntoView {
                             </EmptyState>
                         </div>
                     </Show>
+                    // 正拖着图片悬在窗口上:松手 = 贴成参考图
+                    <FileDropHint
+                        state=state
+                        accepts=is_importable_image
+                        icon=IconKind::Image
+                        text=Signal::derive(move || if design.with(Option::is_some) {
+                            t_string!(i18n, studio.drop_reference).to_string()
+                        } else {
+                            t_string!(i18n, studio.drop_reference_new).to_string()
+                        })
+                        reject=Signal::derive(move || t_string!(i18n, imagery.drop_reject).to_string())
+                    />
                     // ---- 中:3D 视图 + 代码 ----
                     <section class="flex-1 min-w-0 h-full flex flex-col">
                         <div class="shrink-0 h-11 px-3 flex items-center gap-3 border-b border-gray-200 dark:border-gray-700 text-xs text-gray-500 dark:text-gray-400 whitespace-nowrap overflow-hidden">

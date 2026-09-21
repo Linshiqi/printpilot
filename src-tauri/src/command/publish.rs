@@ -3,7 +3,6 @@
 //! 红线(ADR-0002):这里**不碰任何平台**。「在电脑上发布」只是用默认浏览器打开官方的发布页;
 //! 「用手机发布」只是一个只读的局域网页面。点「发布」的永远是人。
 
-use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -18,7 +17,7 @@ use serde_json::json;
 use tauri::{AppHandle, State};
 use tauri_plugin_opener::OpenerExt;
 
-use super::cad::{agent_err, fs_err, folder_for, invalid, llm_or_demo};
+use super::cad::{agent_err, decode_upright, fs_err, folder_for, invalid, llm_or_demo};
 use super::join_err;
 use crate::share::{self, SharePayload};
 use crate::AppCtx;
@@ -219,18 +218,6 @@ pub async fn publish_draft_listing(ctx: State<'_, Arc<AppCtx>>, project_id: Stri
 }
 
 // ---------------------------------------------------------------- 图片
-
-/// 按 EXIF 摆正后解码。
-fn decode_upright(bytes: &[u8]) -> Result<image::DynamicImage, String> {
-    use image::{DynamicImage, ImageDecoder, ImageReader};
-    let unreadable = |e: image::ImageError| errcode::err(errcode::IMAGE_UNREADABLE, e);
-    let reader = ImageReader::new(Cursor::new(bytes)).with_guessed_format().map_err(|e| errcode::err(errcode::IMAGE_UNREADABLE, e))?;
-    let mut decoder = reader.into_decoder().map_err(unreadable)?;
-    let orientation = decoder.orientation().map_err(unreadable)?;
-    let mut img = DynamicImage::from_decoder(decoder).map_err(unreadable)?;
-    img.apply_orientation(orientation);
-    Ok(img)
-}
 
 /// 透明底铺白(JPEG 没有透明通道,直接丢掉 alpha 会变成一片黑)。
 fn flatten(img: &image::DynamicImage) -> image::RgbImage {
@@ -505,6 +492,8 @@ pub async fn publish_mark_published(ctx: State<'_, Arc<AppCtx>>, pack_id: String
 
 #[cfg(test)]
 mod tests {
+    use std::io::Cursor;
+
     use super::*;
 
     fn png(w: u32, h: u32, transparent: bool) -> Vec<u8> {

@@ -35,7 +35,7 @@ const ENGINE_PROGRESS_EVENT: &str = "cad-engine-progress";
 pub(crate) const MAX_REFERENCE_IMAGES: usize = 4;
 const MAX_RENDER_IMAGES: usize = 6;
 /// 参考图入库时缩到的最长边(像素)。视觉模型每张图的 token 有上限,再大也是白传
-const REFERENCE_MAX_SIDE: u32 = 1536;
+pub(crate) const REFERENCE_MAX_SIDE: u32 = 1536;
 const MAX_CODE_BYTES: usize = 200_000;
 /// 一个常驻引擎进程最多跑多少个任务就换新的(OpenCascade 长跑会涨内存)
 pub(crate) const WORKER_MAX_JOBS: u32 = 40;
@@ -336,9 +336,8 @@ pub(crate) fn check_code(code: &str) -> Result<(), String> {
 
 // ---------------------------------------------------------------- 参考图
 
-/// 参考图入库前的处理:按 EXIF 摆正 → 缩到最长边 1536 → 透明底铺白 → 重新编码成 JPEG。
-/// 重新编码同时去掉了 EXIF(手机照片里有 GPS 和机型)——这张图之后要发给第三方的视觉模型。
-pub(crate) fn prepare_reference(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), String> {
+/// 按 EXIF 摆正后解码(手机竖拍的照片,像素其实是横着存的)。
+pub(crate) fn decode_upright(bytes: &[u8]) -> Result<image::DynamicImage, String> {
     use image::{DynamicImage, ImageDecoder, ImageReader};
     let unreadable = |e: image::ImageError| errcode::err(errcode::IMAGE_UNREADABLE, e);
 
@@ -349,6 +348,17 @@ pub(crate) fn prepare_reference(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), Str
     let orientation = decoder.orientation().map_err(unreadable)?;
     let mut img = DynamicImage::from_decoder(decoder).map_err(unreadable)?;
     img.apply_orientation(orientation);
+    Ok(img)
+}
+
+/// 参考图入库前的处理:按 EXIF 摆正 → 缩到最长边 1536 → 透明底铺白 → 重新编码成 JPEG。
+/// 重新编码同时去掉了 EXIF(手机照片里有 GPS 和机型)——这张图之后要发给第三方的视觉模型。
+pub(crate) fn prepare_reference(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), String> {
+    reference_jpeg(decode_upright(bytes)?)
+}
+
+/// 已经解码好的图 → 参考图(剪贴板里贴进来的没有文件,直接从像素走这里)。
+pub(crate) fn reference_jpeg(mut img: image::DynamicImage) -> Result<(Vec<u8>, u32, u32), String> {
     if img.width().max(img.height()) > REFERENCE_MAX_SIDE {
         img = img.resize(REFERENCE_MAX_SIDE, REFERENCE_MAX_SIDE, image::imageops::FilterType::Triangle);
     }
@@ -366,7 +376,7 @@ pub(crate) fn prepare_reference(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), Str
     let mut out = Vec::new();
     image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 88)
         .encode_image(&rgb)
-        .map_err(unreadable)?;
+        .map_err(|e| errcode::err(errcode::IMAGE_UNREADABLE, e))?;
     Ok((out, w, h))
 }
 

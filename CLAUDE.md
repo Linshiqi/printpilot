@@ -57,12 +57,14 @@ Rust + Tauri 2 + Leptos 0.7（CSR）+ Trunk 0.21 + Tailwind v4 + leptos_i18n 0.5
 - `std::fs::copy` 在 Windows 上会保留源文件的修改时间——导出的文件「修改时间比现在早」是正常的。
 - **应用退出时析构函数不会跑**（托管状态不 Drop）：靠 Drop 清理的临时目录要在下次启动时兜底清一遍（`command::cad::clean_scratch`）；靠 Drop 杀的子进程要有别的退出途径（常驻引擎读到 stdin EOF 自己退出）。
 - Windows 上子进程刚被杀的那一瞬间，它的工作目录可能还删不掉——`remove_dir_all` 要带几次短重试。
-- **别在 bash heredoc 里写带反斜杠转义的 Python 字符串**（`
-`、`\d`）：到 Python 手里已经被吃掉一层，写出去的文件里变成真换行。改这类内容用编辑工具，或者用 `chr(10)` / `chr(92)` 拼。
+- **别在 bash heredoc 里写带反斜杠的内容**（Python 里的 `\\`、`\d`，JS 里的 Windows 路径 `'E:\\dir\\'`）：到脚本手里反斜杠已经被吃掉一层——`'\\'` 变成 `'\'`（Rust 直接编不过），`E:\\target` 变成带制表符的 `E:<TAB>arget`。带反斜杠的补丁脚本、测试用的 JS 一律用编辑工具写成文件再跑（这条注记自己就被这样弄坏过一次）。
 - **用 Python 脚本打补丁时,读写都要带 `newline=""`**:Windows 上文本模式默认把 `\n` 写成 `\r\n`,一个只改三行的补丁会让 `git diff` 变成整个文件(仓库里的文件是 LF)。补丁脚本用编辑工具写到 `target/` 下、跑完删掉。
 - **build123d 0.12 的几个性能坑(实测,见 ADR-0003「性能与质量复查」)**:默认的精确包围盒在环面 / 样条面上每个面 20 多毫秒(带圆角的零件一次 150~190 ms);`export_stl` 用的是**相对**偏差(小孔过度细分、大曲面没有误差上限);`x.is_valid` 是属性,`callable(getattr(x, "is_valid"))` 这种兼容写法会把整遍检查跑两次;循环里做布尔比一次减一批慢 25 倍。执行器里量东西 / 导出之前先想想这几条。
 - **事件回调里不能 `expect_context` / `use_context`**：回调执行时没有响应式上下文，会直接 panic（`expected context of type … to be present`），整个界面跟着死。要用的东西（`AppState`、i18n）在**组件体里**取好，`Copy` 进闭包。右键菜单的回调踩过。
 - **两个互相镜像的 `Effect` 必须「值不一样才写」**：Leptos 的 `set` 不管值变没变都会通知订阅者。`A 变了 → 写 B`、`B 变了 → 写 A` 这一对如果无条件地写，就是一个死循环——界面线程被占满，窗口卡死，连 DevTools（`cdp.py`）都连不上（表现为 `Runtime.enable` 超时）。项目抽屉的开关同步（`project_drawer.rs`）踩过。
+- **web-sys 里的 `ClipboardEvent` 属于「不稳定接口」**（要加 `--cfg=web_sys_unstable_apis` 才有），所以 Leptos 的 `ev::paste` 给的是普通的 `web_sys::Event`。只是想看一眼剪贴板里有没有图，用 `js_sys::Reflect` 取 `clipboardData.types` 就够了（`src/view/imagery/mod.rs`）；图本身让后端用 `arboard` 去读。
+- **把本地文件拖进窗口，WebView 里的 HTML5 拖放收不到路径**：Tauri 默认接管了文件拖放，要听的是 `tauri://drag-enter / over / drop / leave`（`app::listen_file_drops`）。事件里的坐标是**物理像素**，和元素位置比之前要除以 `devicePixelRatio`。端到端测试里可以用 `window.__TAURI__.event.emit('tauri://drag-drop', { paths, position })` 模拟；真的从资源管理器拖一次，调试通道做不到，得手动试。
+- **「页面登记一个全局处理函数、卸载时撤掉」要带编号**：换页时新页面先挂载、旧页面后卸载，旧页面无条件地撤，会把新页面刚登记的撤掉（`AppState::accept_file_drops`）。
 - **`on:blur` 里读信号要用 `try_` 系列**（`try_get_untracked` / `try_set`）：对话框或页面关掉时，正聚焦的输入框会在被移除的瞬间收到 `blur`，而那时它的信号已经随作用域销毁了——直接 `get` 会 panic（`…has already been disposed`）。`NumInput` 和两处重命名输入框踩过。同理：`For` 的 `key` 要包含**会变的显示内容**，键没变的行不会重画（三档建议价曾因此显示旧毛利）。
 
 ## 常用命令
@@ -173,6 +175,19 @@ cargo tauri build --bundles nsis                  # 本机出 Windows 安装包(
 - 出图供应商的「测试连接」= **真的出一张图、会扣费**，界面文案里写明了，别改成静默调用。
 - 场景图 / 封面常驻一句平台规则（首图必须是实物正面图、发布要声明 AI 生成）；**不做批量模板化换景**（小红书明文违规，`docs/04-integrations.md` §4.3）。
 - 演示模式用本机「画师」`DemoPainter`（编辑 = 只换背景色、主体像素不动，有测试守着）；演示的回答必须自己写明「演示数据」。
+- **图不一定是生成的**（[ADR-0011](docs/adr/0011-import-and-drop.md)）：自己的图可以导入——按钮（可多选）、直接拖进窗口、`Ctrl+V`。导入的图就是 `image_versions` 里 `mode = "import"` 的一行（没有提示词、`ai_generated = false`），和生成的图同等地位；三个入口共用 `import_into_board`。**落点决定去向**：画板这边 = 导入，对话栏 / 输入框里 = 只贴到这句话上当参考。入库前一律重新编码（去 EXIF——手机照片里有拍摄地点）、最长边 4096、真有透明的才存 PNG；一张坏图不让整批作废，逐个说明。送去建模时，大图和带透明的 PNG 会先另做一张 1536 的参考图（`design_reference`）。
+
+## 拖进窗口的文件
+
+机制是全局的，三个页面在用（图片 = 导入 / 贴参考图，建模 = 参考图，上架 = 实拍图）：
+
+- `app::listen_file_drops` 只注册一次：悬着时写 `state.file_drag`，松手时调用当前页面用 `state.accept_file_drops(..)` 登记的处理函数；没登记的页面不收文件（拖进来的是图片就提示该拖到哪）。
+- 页面要接收文件：组件体里调 `state.accept_file_drops(move |dropped| …)`（卸载时自动撤），再放一个提示层——只有一种去向用 `ui::FileDropHint`，分区的（像图片工作台）自己用 `ui::DropPanel` 拼，落点用 `getBoundingClientRect` 和 `dropped.x / y` 比。
+- 「是不是图片」统一用 `pp_common::imagery::is_importable_image`（前后端同一份扩展名表）。
+
+## 设置页
+
+左边一列二级菜单、右边只显示选中的那一组（`state::SettingsSection`：通用 / 接口密钥 / 图片生成 / 资料库 / 关于与更新），**每一组都要在最小窗口（1080 × 680）里不用滚动就看得全**——当初就是因为一长页往下滚才改的。新增一组：枚举加一项（`ALL`、`as_str`）+ `settings.rs` 的 `SectionItem`（图标、文案）和 `SettingsView` 的 `match` 各加一支。别的页面说「去设置」时用 `state.go_settings(SettingsSection::Keys)` 直接落到那一组，不要只 `go(Route::Settings)`。
 
 ## 供应商适配器
 

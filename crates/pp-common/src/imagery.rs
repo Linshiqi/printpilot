@@ -85,6 +85,39 @@ impl ImageAspect {
     pub fn parse(s: &str) -> ImageAspect {
         ImageAspect::ALL.into_iter().find(|a| a.as_str() == s || a.ratio() == s).unwrap_or_default()
     }
+
+    fn value(self) -> f64 {
+        match self {
+            ImageAspect::Square => 1.0,
+            ImageAspect::Portrait => 3.0 / 4.0,
+            ImageAspect::Landscape => 4.0 / 3.0,
+            ImageAspect::Tall => 9.0 / 16.0,
+            ImageAspect::Wide => 16.0 / 9.0,
+        }
+    }
+
+    /// 一张现成的图(用户导入的)最接近哪种画幅。按比例的对数距离比——2:1 和 1:2 离 1:1 一样远。
+    pub fn nearest(width: u32, height: u32) -> ImageAspect {
+        if width == 0 || height == 0 {
+            return ImageAspect::default();
+        }
+        let r = (width as f64 / height as f64).ln();
+        ImageAspect::ALL
+            .into_iter()
+            .min_by(|a, b| (a.value().ln() - r).abs().total_cmp(&(b.value().ln() - r).abs()))
+            .unwrap_or_default()
+    }
+}
+
+/// 能导入的图片格式(和后端解码器开的格式一致)。HEIC / AVIF 解不了:要先另存为 JPG。
+pub const IMPORT_EXTENSIONS: [&str; 5] = ["png", "jpg", "jpeg", "jfif", "webp"];
+/// 一次最多导入几张——防止把整个相册拖进来
+pub const IMPORT_MAX_FILES: usize = 20;
+
+/// 按扩展名看是不是能导入的图片(拖进来的东西先过这一道,真正认不认得还要看解码)。
+pub fn is_importable_image(path: &str) -> bool {
+    let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
+    name.rsplit_once('.').is_some_and(|(stem, ext)| !stem.is_empty() && IMPORT_EXTENSIONS.iter().any(|e| ext.eq_ignore_ascii_case(e)))
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -118,7 +151,7 @@ pub struct ImageBoardSummary {
     pub updated_at: i64,
 }
 
-/// 生成出来的一张图。`parent_id` 有值 = 它是从那张图改出来的。
+/// 画板上的一张图:模型生成的,或者用户自己导入的。`parent_id` 有值 = 它是从那张图改出来的。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ImageVersion {
     pub id: String,
@@ -126,9 +159,9 @@ pub struct ImageVersion {
     #[serde(default)]
     pub parent_id: Option<String>,
     pub asset_id: String,
-    /// 交给图片模型的提示词(编辑时是编辑指令)
+    /// 交给图片模型的提示词(编辑时是编辑指令);导入的图没有,是空的
     pub prompt: String,
-    /// generate(文生图)· edit(按指令改图)
+    /// generate(文生图)· edit(按指令改图)· import(用户自己导入的:本地文件、拖进来的、粘贴的)
     pub mode: String,
     pub provider: String,
     pub model: String,
@@ -143,7 +176,7 @@ pub struct ImageVersion {
 pub enum ImageMsgKind {
     /// 文字:用户的话;AI 的回答 / 反问
     Text,
-    /// AI 出了一批图
+    /// 一批图:AI 出的(`from_user = false`),或者用户导入的(`from_user = true`,`extra.mode = import`)
     Images,
 }
 
@@ -165,10 +198,10 @@ pub struct ImageMsgExtra {
     /// 这一批图用的提示词
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt: Option<String>,
-    /// generate / edit
+    /// generate / edit / import
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
-    /// 这一批出的图
+    /// 这一批出的(或导入的)图
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub version_ids: Vec<String>,
     /// 编辑时:改的是哪一张
@@ -208,6 +241,27 @@ pub struct ImageTurnResult {
     pub messages: Vec<ImageMessage>,
     #[serde(default)]
     pub versions: Vec<ImageVersion>,
+}
+
+/// 没导入成的一个文件:文件名 + 原因(`#错误码#细节`,前端按码翻成当前语言)。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ImportFailure {
+    pub name: String,
+    pub reason: String,
+}
+
+/// 导入一批图片的结果。能导入的照常导入,导不进来的逐个说明——不因为一张坏图就整批作废。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ImageImportResult {
+    pub board: ImageBoard,
+    /// 时间线上记的那一条「导入了这几张」;一张都没导入成就没有
+    #[serde(default)]
+    pub message: Option<ImageMessage>,
+    /// 新增的图,第一个文件在前(它成为当前选中的图)
+    #[serde(default)]
+    pub versions: Vec<ImageVersion>,
+    #[serde(default)]
+    pub failed: Vec<ImportFailure>,
 }
 
 /// 现在能用哪个出图的供应商(设置页 / 工作台顶部展示)。
@@ -254,6 +308,28 @@ mod tests {
         }
         assert_eq!(ImagePurpose::ModelRef.default_aspect(), ImageAspect::Square);
         assert_eq!(ImagePurpose::Cover.default_aspect().ratio(), "3:4", "小红书封面推荐 3:4");
+    }
+
+    #[test]
+    fn an_imported_picture_gets_the_closest_aspect() {
+        assert_eq!(ImageAspect::nearest(1000, 1000), ImageAspect::Square);
+        assert_eq!(ImageAspect::nearest(3024, 4032), ImageAspect::Portrait, "手机竖拍");
+        assert_eq!(ImageAspect::nearest(4032, 3024), ImageAspect::Landscape);
+        assert_eq!(ImageAspect::nearest(1080, 1920), ImageAspect::Tall);
+        assert_eq!(ImageAspect::nearest(2560, 1440), ImageAspect::Wide, "屏幕截图");
+        assert_eq!(ImageAspect::nearest(1080, 1440), ImageAspect::Portrait);
+        assert_eq!(ImageAspect::nearest(5000, 1000), ImageAspect::Wide, "比 16:9 还扁的归到最扁的那一档");
+        assert_eq!(ImageAspect::nearest(0, 10), ImageAspect::Square, "坏尺寸不 panic");
+    }
+
+    #[test]
+    fn only_files_with_a_supported_picture_extension_are_importable() {
+        for ok in ["C:\\图\\线缆夹.JPG", "/home/u/a.b/ref.webp", "shot.png", "x.jpeg", "saved-from-browser.jfif"] {
+            assert!(is_importable_image(ok), "{ok}");
+        }
+        for no in ["C:\\图\\IMG_0001.HEIC", "model.stl", "noext", "C:\\folder.png\\readme", ".png", "a.avif", ""] {
+            assert!(!is_importable_image(no), "{no}");
+        }
     }
 
     #[test]

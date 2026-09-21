@@ -7,10 +7,10 @@ use pp_common::AppInfo;
 
 use crate::i18n_util::current_locale;
 use crate::i18n::{use_i18n, Locale};
-use crate::icon::IconKind;
+use crate::icon::{Icon, IconKind};
 use crate::ipc::{self, cmd};
-use crate::state::AppState;
-use crate::theme::Theme;
+use crate::state::{AppState, SettingsSection};
+use crate::theme::{set_pref, Theme};
 use crate::ui::{Badge, Button, ButtonVariant, Card, Field, SectionTitle, Segmented, TextInput, Toggle, Tone};
 
 #[component]
@@ -293,12 +293,65 @@ fn UpdateCard(state: AppState) -> impl IntoView {
     }
 }
 
+/// 二级菜单里的一项。右边可以带一点状态:密钥配了几个、有没有新版本。
 #[component]
-pub fn SettingsView(state: AppState) -> impl IntoView {
+fn SectionItem(state: AppState, section: SettingsSection) -> impl IntoView {
     let i18n = use_i18n();
-    let info = move |pick: fn(&AppInfo) -> String| state.app_info.with(|i| i.as_ref().map(pick).unwrap_or_default());
-    let label = move |f: fn(crate::i18n::Locale) -> &'static str| Signal::derive(move || f(i18n.get_locale()).to_string());
+    let active = move || state.settings_section.get() == section;
+    let icon = match section {
+        SettingsSection::General => IconKind::Settings,
+        SettingsSection::Keys => IconKind::Key,
+        SettingsSection::Images => IconKind::Image,
+        SettingsSection::Library => IconKind::Folder,
+        SettingsSection::About => IconKind::Info,
+    };
+    let label = move || match section {
+        SettingsSection::General => t_string!(i18n, settings.nav_general),
+        SettingsSection::Keys => t_string!(i18n, settings.keys),
+        SettingsSection::Images => t_string!(i18n, settings.image),
+        SettingsSection::Library => t_string!(i18n, settings.library),
+        SettingsSection::About => t_string!(i18n, settings.nav_about),
+    };
+    view! {
+        <button
+            type="button"
+            class="w-full flex items-center gap-2.5 h-9 px-3 rounded-lg text-sm transition-colors"
+            class=("bg-brand-soft", active)
+            class=("text-brand", active)
+            class=("font-medium", active)
+            class=("dark:bg-indigo-500/15", active)
+            class=("dark:text-indigo-300", active)
+            class=("text-gray-600", move || !active())
+            class=("dark:text-gray-300", move || !active())
+            class=("hover:bg-gray-100", move || !active())
+            class=("dark:hover:bg-gray-700/60", move || !active())
+            on:click=move |_| {
+                state.settings_section.set(section);
+                set_pref("settings_section", section.as_str());
+            }
+        >
+            <Icon kind=icon class="w-4 h-4 shrink-0"/>
+            <span class="flex-1 min-w-0 truncate text-left">{label}</span>
+            {move || match section {
+                // 配了几个密钥:一眼看出还差哪一步
+                SettingsSection::Keys => {
+                    let (have, all) = state.providers.with(|l| (l.iter().filter(|p| p.has_key).count(), l.len()));
+                    (all > 0).then(|| view! { <span class="text-[11px] tabular-nums text-gray-400">{format!("{have}/{all}")}</span> }.into_any())
+                }
+                SettingsSection::About => state
+                    .update_available
+                    .with(Option::is_some)
+                    .then(|| view! { <span class="w-1.5 h-1.5 rounded-full bg-brand"></span> }.into_any()),
+                _ => None,
+            }}
+        </button>
+    }
+}
 
+#[component]
+fn GeneralSection(state: AppState) -> impl IntoView {
+    let i18n = use_i18n();
+    let label = move |f: fn(Locale) -> &'static str| Signal::derive(move || f(i18n.get_locale()).to_string());
     let set_demo = move |enabled: bool| {
         spawn_local(async move {
             match ipc::call::<_, AppInfo>(cmd::SET_DEMO_MODE, &serde_json::json!({ "enabled": enabled })).await {
@@ -307,135 +360,162 @@ pub fn SettingsView(state: AppState) -> impl IntoView {
             }
         });
     };
+    view! {
+        <Card class="p-5">
+            <SectionTitle title=move || t_string!(i18n, settings.appearance)/>
+            <div class="divide-y divide-gray-100 dark:divide-gray-700 pt-1">
+                <Row label=label(|l| td_string!(l, settings.theme))>
+                    <Segmented
+                        value=Signal::derive(move || state.theme.get())
+                        options=vec![
+                            (Theme::Light, label(|l| td_string!(l, common.theme_light))),
+                            (Theme::Dark, label(|l| td_string!(l, common.theme_dark))),
+                        ]
+                        on_change=move |t: Theme| state.theme.set(t)
+                    />
+                </Row>
+                <Row label=label(|l| td_string!(l, settings.language))>
+                    <Segmented
+                        value=Signal::derive(move || i18n.get_locale())
+                        options=vec![
+                            (Locale::zh, Signal::stored("中文".to_string())),
+                            (Locale::en, Signal::stored("English".to_string())),
+                        ]
+                        on_change=move |l: Locale| i18n.set_locale(l)
+                    />
+                </Row>
+            </div>
+        </Card>
 
+        <Card class="p-5 space-y-2">
+            <div class="flex items-start justify-between gap-6">
+                <SectionTitle title=move || t_string!(i18n, settings.demo_mode) hint=move || t_string!(i18n, settings.demo_mode_hint)/>
+                <Toggle
+                    checked=Signal::derive(move || state.app_info.with(|i| i.as_ref().is_some_and(|i| i.demo_mode)))
+                    disabled=Signal::derive(move || state.app_info.with(|i| !i.as_ref().is_some_and(|i| i.config_writable)))
+                    on_change=set_demo
+                />
+            </div>
+        </Card>
+    }
+}
+
+#[component]
+fn KeysSection(state: AppState) -> impl IntoView {
+    let i18n = use_i18n();
+    let label = move |f: fn(Locale) -> &'static str| Signal::derive(move || f(i18n.get_locale()).to_string());
+    view! {
+        <Card class="p-5">
+            <SectionTitle title=move || t_string!(i18n, settings.keys) hint=move || t_string!(i18n, settings.keys_hint)/>
+            <div class="divide-y divide-gray-100 dark:divide-gray-700 pt-1">
+                <KeyRow
+                    state=state
+                    id=ProviderId::Deepseek
+                    title=label(|l| td_string!(l, settings.key_deepseek))
+                    hint=label(|l| td_string!(l, settings.key_deepseek_hint))
+                />
+                <KeyRow
+                    state=state
+                    id=ProviderId::ZhipuSearch
+                    title=label(|l| td_string!(l, settings.key_zhipu_search))
+                    hint=label(|l| td_string!(l, settings.key_zhipu_search_hint))
+                />
+                <KeyRow
+                    state=state
+                    id=ProviderId::Minimax
+                    title=label(|l| td_string!(l, settings.key_minimax))
+                    hint=label(|l| td_string!(l, settings.key_minimax_hint))
+                />
+                <KeyRow
+                    state=state
+                    id=ProviderId::QwenImage
+                    title=label(|l| td_string!(l, settings.key_qwen_image))
+                    hint=label(|l| td_string!(l, settings.key_qwen_image_hint))
+                />
+            </div>
+        </Card>
+    }
+}
+
+#[component]
+fn LibrarySection(state: AppState) -> impl IntoView {
+    let i18n = use_i18n();
+    view! {
+        <Card class="p-5 space-y-2">
+            <SectionTitle title=move || t_string!(i18n, settings.library) hint=move || t_string!(i18n, settings.library_hint)/>
+            <div class="flex items-center gap-3 pt-1">
+                <code class="flex-1 min-w-0 truncate selectable rounded-md bg-gray-100 dark:bg-gray-900 px-2.5 py-1.5 text-xs text-gray-700 dark:text-gray-300">
+                    {move || state.app_info.with(|i| i.as_ref().map(|i| i.library_dir.clone()).unwrap_or_default())}
+                </code>
+                <Button
+                    small=true
+                    variant=ButtonVariant::Secondary
+                    icon=IconKind::Folder
+                    on_click=move || spawn_local(async move {
+                        if let Err(e) = ipc::call_unit_no_args(cmd::REVEAL_LIBRARY).await {
+                            state.notify_error(e);
+                        }
+                    })
+                >
+                    {move || t_string!(i18n, settings.open_library)}
+                </Button>
+            </div>
+        </Card>
+    }
+}
+
+#[component]
+fn AboutSection(state: AppState) -> impl IntoView {
+    let i18n = use_i18n();
+    let info = move |pick: fn(&AppInfo) -> String| state.app_info.with(|i| i.as_ref().map(pick).unwrap_or_default());
+    let label = move |f: fn(Locale) -> &'static str| Signal::derive(move || f(i18n.get_locale()).to_string());
+    view! {
+        <UpdateCard state=state/>
+        <Card class="p-5">
+            <SectionTitle title=move || t_string!(i18n, settings.about)/>
+            <div class="divide-y divide-gray-100 dark:divide-gray-700 pt-1">
+                <Row label=label(|l| td_string!(l, settings.version))>
+                    <span class="tabular-nums selectable">{move || info(|i| i.version.clone())}</span>
+                </Row>
+                <Row label=label(|l| td_string!(l, settings.schema))>
+                    <span class="tabular-nums">{move || info(|i| format!("v{}", i.schema_version))}</span>
+                </Row>
+                <Row label=label(|l| td_string!(l, settings.projects))>
+                    <span class="tabular-nums">{move || state.projects.with(Vec::len)}</span>
+                </Row>
+            </div>
+        </Card>
+    }
+}
+
+/// 设置页:左边一列二级菜单,右边只显示选中的那一组——不再是一长页往下滚。
+#[component]
+pub fn SettingsView(state: AppState) -> impl IntoView {
+    let i18n = use_i18n();
     view! {
         <div class="h-full flex flex-col">
             <header class="shrink-0 px-6 h-14 flex items-center border-b border-gray-200 dark:border-gray-700">
                 <h1 class="text-base font-semibold">{move || t_string!(i18n, settings.title)}</h1>
             </header>
-            <div class="flex-1 overflow-y-auto">
-                <div class="max-w-2xl mx-auto p-6 space-y-5">
-                    <Show when=move || state.app_info.with(|i| i.as_ref().is_some_and(|i| !i.config_writable))>
-                        <div class="rounded-lg border border-amber-300 bg-amber-50 dark:bg-amber-500/10 dark:border-amber-500/40 px-4 py-3 text-xs leading-relaxed text-amber-800 dark:text-amber-200">
-                            {move || t_string!(i18n, settings.config_readonly)}
-                        </div>
-                    </Show>
-
-                    <Card class="p-5 space-y-2">
-                        <SectionTitle
-                            title=move || t_string!(i18n, settings.library)
-                            hint=move || t_string!(i18n, settings.library_hint)
-                        />
-                        <div class="flex items-center gap-3 pt-1">
-                            <code class="flex-1 min-w-0 truncate selectable rounded-md bg-gray-100 dark:bg-gray-900 px-2.5 py-1.5 text-xs text-gray-700 dark:text-gray-300">
-                                {move || info(|i| i.library_dir.clone())}
-                            </code>
-                            <Button
-                                small=true
-                                variant=ButtonVariant::Secondary
-                                icon=IconKind::Folder
-                                on_click=move || spawn_local(async move {
-                                    if let Err(e) = ipc::call_unit_no_args(cmd::REVEAL_LIBRARY).await {
-                                        state.notify_error(e);
-                                    }
-                                })
-                            >
-                                {move || t_string!(i18n, settings.open_library)}
-                            </Button>
-                        </div>
-                    </Card>
-
-                    <Card class="p-5">
-                        <SectionTitle
-                            title=move || t_string!(i18n, settings.keys)
-                            hint=move || t_string!(i18n, settings.keys_hint)
-                        />
-                        <div class="divide-y divide-gray-100 dark:divide-gray-700 pt-1">
-                            <KeyRow
-                                state=state
-                                id=ProviderId::Deepseek
-                                title=label(|l| leptos_i18n::td_string!(l, settings.key_deepseek))
-                                hint=label(|l| leptos_i18n::td_string!(l, settings.key_deepseek_hint))
-                            />
-                            <KeyRow
-                                state=state
-                                id=ProviderId::ZhipuSearch
-                                title=label(|l| leptos_i18n::td_string!(l, settings.key_zhipu_search))
-                                hint=label(|l| leptos_i18n::td_string!(l, settings.key_zhipu_search_hint))
-                            />
-                            <KeyRow
-                                state=state
-                                id=ProviderId::Minimax
-                                title=label(|l| leptos_i18n::td_string!(l, settings.key_minimax))
-                                hint=label(|l| leptos_i18n::td_string!(l, settings.key_minimax_hint))
-                            />
-                            <KeyRow
-                                state=state
-                                id=ProviderId::QwenImage
-                                title=label(|l| leptos_i18n::td_string!(l, settings.key_qwen_image))
-                                hint=label(|l| leptos_i18n::td_string!(l, settings.key_qwen_image_hint))
-                            />
-                        </div>
-                    </Card>
-
-                    <ImageSettingsCard state=state/>
-
-                    <Card class="p-5">
-                        <SectionTitle title=move || t_string!(i18n, settings.appearance)/>
-                        <div class="divide-y divide-gray-100 dark:divide-gray-700 pt-1">
-                            <Row label=label(|l| leptos_i18n::td_string!(l, settings.theme))>
-                                <Segmented
-                                    value=Signal::derive(move || state.theme.get())
-                                    options=vec![
-                                        (Theme::Light, label(|l| leptos_i18n::td_string!(l, common.theme_light))),
-                                        (Theme::Dark, label(|l| leptos_i18n::td_string!(l, common.theme_dark))),
-                                    ]
-                                    on_change=move |t: Theme| state.theme.set(t)
-                                />
-                            </Row>
-                            <Row label=label(|l| leptos_i18n::td_string!(l, settings.language))>
-                                <Segmented
-                                    value=Signal::derive(move || i18n.get_locale())
-                                    options=vec![
-                                        (Locale::zh, Signal::stored("中文".to_string())),
-                                        (Locale::en, Signal::stored("English".to_string())),
-                                    ]
-                                    on_change=move |l: Locale| i18n.set_locale(l)
-                                />
-                            </Row>
-                        </div>
-                    </Card>
-
-                    <Card class="p-5 space-y-2">
-                        <div class="flex items-start justify-between gap-6">
-                            <SectionTitle
-                                title=move || t_string!(i18n, settings.demo_mode)
-                                hint=move || t_string!(i18n, settings.demo_mode_hint)
-                            />
-                            <Toggle
-                                checked=Signal::derive(move || state.app_info.with(|i| i.as_ref().is_some_and(|i| i.demo_mode)))
-                                disabled=Signal::derive(move || state.app_info.with(|i| !i.as_ref().is_some_and(|i| i.config_writable)))
-                                on_change=set_demo
-                            />
-                        </div>
-                    </Card>
-
-                    <UpdateCard state=state/>
-
-                    <Card class="p-5">
-                        <SectionTitle title=move || t_string!(i18n, settings.about)/>
-                        <div class="divide-y divide-gray-100 dark:divide-gray-700 pt-1">
-                            <Row label=label(|l| leptos_i18n::td_string!(l, settings.version))>
-                                <span class="tabular-nums selectable">{move || info(|i| i.version.clone())}</span>
-                            </Row>
-                            <Row label=label(|l| leptos_i18n::td_string!(l, settings.schema))>
-                                <span class="tabular-nums">{move || info(|i| format!("v{}", i.schema_version))}</span>
-                            </Row>
-                            <Row label=label(|l| leptos_i18n::td_string!(l, settings.projects))>
-                                <span class="tabular-nums">{move || state.projects.with(Vec::len)}</span>
-                            </Row>
-                        </div>
-                    </Card>
+            <div class="flex-1 min-h-0 flex">
+                <nav class="w-48 shrink-0 h-full overflow-y-auto p-2 space-y-0.5 border-r border-gray-200 dark:border-gray-700">
+                    {SettingsSection::ALL.into_iter().map(|section| view! { <SectionItem state=state section=section/> }).collect_view()}
+                </nav>
+                <div class="flex-1 min-w-0 h-full overflow-y-auto">
+                    <div class="max-w-2xl p-6 space-y-5">
+                        <Show when=move || state.app_info.with(|i| i.as_ref().is_some_and(|i| !i.config_writable))>
+                            <div class="rounded-lg border border-amber-300 bg-amber-50 dark:bg-amber-500/10 dark:border-amber-500/40 px-4 py-3 text-xs leading-relaxed text-amber-800 dark:text-amber-200">
+                                {move || t_string!(i18n, settings.config_readonly)}
+                            </div>
+                        </Show>
+                        {move || match state.settings_section.get() {
+                            SettingsSection::General => view! { <GeneralSection state=state/> }.into_any(),
+                            SettingsSection::Keys => view! { <KeysSection state=state/> }.into_any(),
+                            SettingsSection::Images => view! { <ImageSettingsCard state=state/> }.into_any(),
+                            SettingsSection::Library => view! { <LibrarySection state=state/> }.into_any(),
+                            SettingsSection::About => view! { <AboutSection state=state/> }.into_any(),
+                        }}
+                    </div>
                 </div>
             </div>
         </div>

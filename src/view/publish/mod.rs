@@ -14,14 +14,18 @@ use pp_common::publish::{
     char_len, lint_listing, lint_note, parse_tags, spec, tags_line, Channel, DraftKind, DraftStatus, DraftedNotes, ImageFit, LintCode, LintField, LintIssue,
     ListingDraft, ModelLicense, NoteAngle, NoteDraft, PublishImage, PublishMarked, PublishOverview, PublishPack, Severity, ShareInfo, ShipMode,
 };
+use pp_common::imagery::{is_importable_image, IMPORT_EXTENSIONS};
 use pp_common::{errcode, Project};
 
 use crate::i18n::{use_i18n, Locale};
 use crate::i18n_util::{current_locale, stage_name};
 use crate::icon::{Icon, IconKind};
 use crate::ipc::{self, cmd};
-use crate::state::{AppState, Handoff};
-use crate::ui::{copy_entry, image_entries, item, separator, Badge, Button, ButtonVariant, Card, Dialog, DialogFooter, EmptyState, IconButton, NumInput, SectionTitle, Segmented, TextArea, TextInput, Tone};
+use crate::state::{AppState, DroppedFiles, Handoff};
+use crate::ui::{
+    copy_entry, image_entries, item, separator, Badge, Button, ButtonVariant, Card, Dialog, DialogFooter, EmptyState, FileDropHint, IconButton, NumInput, SectionTitle,
+    Segmented, TextArea, TextInput, Tone,
+};
 
 fn angle_name(l: Locale, a: NoteAngle) -> &'static str {
     match a {
@@ -377,25 +381,43 @@ pub fn PublishView(state: AppState) -> impl IntoView {
             }
         });
     };
-    let import_photo = move || {
+    // 导入实拍图:「导入实拍图」按钮选的(可以多选),或者直接拖进窗口的
+    let import_photos = move |paths: Vec<String>| {
         let Some(project_id) = current.get_untracked() else { return };
+        let into = tab.get_untracked();
         spawn_local(async move {
-            let Some(path) = ipc::pick_file("Photo", &["jpg", "jpeg", "png", "webp"]).await else { return };
-            match ipc::call::<_, PublishImage>(cmd::PUBLISH_IMPORT_PHOTO, &serde_json::json!({ "project_id": project_id, "path": path })).await {
-                Ok(img) => {
-                    // 新导入的实拍图直接放进正在编辑的那一份里:商品放最前(首图必须是实拍),笔记放最后
-                    match tab.get_untracked() {
-                        Tab::Listing => l_images.update(|l| l.insert(0, img.asset_id.clone())),
-                        Tab::Notes => n_images.update(|l| l.push(img.asset_id.clone())),
-                    }
-                    overview.update(|o| {
-                        if let Some(o) = o {
-                            o.images.insert(0, img);
+            for path in paths {
+                match ipc::call::<_, PublishImage>(cmd::PUBLISH_IMPORT_PHOTO, &serde_json::json!({ "project_id": project_id, "path": path })).await {
+                    Ok(img) => {
+                        // 新导入的实拍图直接放进正在编辑的那一份里:商品放最前(首图必须是实拍),笔记放最后
+                        match into {
+                            Tab::Listing => l_images.update(|l| l.insert(0, img.asset_id.clone())),
+                            Tab::Notes => n_images.update(|l| l.push(img.asset_id.clone())),
                         }
-                    });
+                        overview.update(|o| {
+                            if let Some(o) = o {
+                                o.images.insert(0, img);
+                            }
+                        });
+                    }
+                    Err(e) => state.notify_error(e),
                 }
-                Err(e) => state.notify_error(e),
             }
+        });
+    };
+    state.accept_file_drops(move |dropped: DroppedFiles| {
+        let pictures: Vec<String> = dropped.paths.into_iter().filter(|p| is_importable_image(p)).collect();
+        if pictures.is_empty() {
+            state.notify_info(td_string!(current_locale(), imagery.drop_reject));
+        } else if current.with_untracked(Option::is_none) {
+            state.notify_info(td_string!(current_locale(), publish.drop_no_project));
+        } else {
+            import_photos(pictures);
+        }
+    });
+    let import_photo = move || {
+        spawn_local(async move {
+            import_photos(ipc::pick_files("Photo", &IMPORT_EXTENSIONS).await);
         });
     };
     let build = move |reason: Option<String>| {
@@ -515,7 +537,19 @@ pub fn PublishView(state: AppState) -> impl IntoView {
                 <Button small=true variant=ButtonVariant::Ghost icon=IconKind::Pencil on_click=move || voice_dialog.set(true)>{move || t_string!(i18n, publish.brand_voice)}</Button>
             </header>
 
-            <div class="flex-1 min-h-0 flex">
+            <div class="relative flex-1 min-h-0 flex">
+                // 正拖着图片悬在窗口上:松手 = 导入为这个项目的实拍图
+                <FileDropHint
+                    state=state
+                    accepts=is_importable_image
+                    icon=IconKind::Upload
+                    text=Signal::derive(move || if current.with(Option::is_some) {
+                        t_string!(i18n, publish.drop_photo).to_string()
+                    } else {
+                        t_string!(i18n, publish.drop_no_project).to_string()
+                    })
+                    reject=Signal::derive(move || t_string!(i18n, imagery.drop_reject).to_string())
+                />
                 // ---- 左:项目 ----
                 <aside class="w-52 shrink-0 h-full overflow-y-auto p-2 space-y-1 border-r border-gray-200 dark:border-gray-700">
                     <Show when=move || state.projects.with(Vec::is_empty)>

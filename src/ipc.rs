@@ -104,6 +104,9 @@ pub mod cmd {
     pub const BOARD_ADOPT: &str = "board_adopt";
     pub const BOARD_REMOVE_IMAGE: &str = "board_remove_image";
     pub const BOARD_ADD_IMAGE: &str = "board_add_image";
+    pub const BOARD_IMPORT_IMAGES: &str = "board_import_images";
+    pub const BOARD_PASTE_IMAGES: &str = "board_paste_images";
+    pub const BOARD_PASTE_REFERENCE: &str = "board_paste_reference";
     pub const BOARD_SEND: &str = "board_send";
     pub const BOARD_TO_DESIGN: &str = "board_to_design";
     pub const BOARD_EXPORT: &str = "board_export";
@@ -133,6 +136,11 @@ pub mod event {
     pub const CAD_ENGINE_PROGRESS: &str = "cad-engine-progress";
     pub const UPDATE_PROGRESS: &str = "update-progress";
     pub const IMAGE_PROGRESS: &str = "image-progress";
+    // Tauri 自己发的:把文件拖进窗口(载荷 `{ paths?, position: { x, y } }`,坐标是物理像素)
+    pub const DRAG_ENTER: &str = "tauri://drag-enter";
+    pub const DRAG_OVER: &str = "tauri://drag-over";
+    pub const DRAG_DROP: &str = "tauri://drag-drop";
+    pub const DRAG_LEAVE: &str = "tauri://drag-leave";
 }
 
 #[wasm_bindgen]
@@ -219,6 +227,21 @@ pub async fn pick_file(title: &str, extensions: &[&str]) -> Option<String> {
         "filters": [{ "name": title, "extensions": extensions }],
     });
     dialog_open(to_js(&opts).ok()?).await.ok()?.as_string()
+}
+
+/// 原生「打开文件」对话框,可以多选。用户取消返回空表。
+pub async fn pick_files(title: &str, extensions: &[&str]) -> Vec<String> {
+    let opts = serde_json::json!({
+        "title": title,
+        "multiple": true,
+        "directory": false,
+        "filters": [{ "name": title, "extensions": extensions }],
+    });
+    let Some(js) = to_js(&opts).ok() else { return Vec::new() };
+    match dialog_open(js).await {
+        Ok(picked) => from_js::<Option<Vec<String>>>(picked).ok().flatten().unwrap_or_default(),
+        Err(_) => Vec::new(),
+    }
 }
 
 /// 原生「另存为」对话框。用户取消返回 `None`。

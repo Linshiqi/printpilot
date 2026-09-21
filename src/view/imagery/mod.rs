@@ -1,8 +1,12 @@
 //! 图片工作台(一级入口)。接图片生成模型的接口出图,并且围绕**一条和 AI 的持续对话**来改图。
 //!
-//!   左:画板列表(一个画板 = 一个主题的一组图:参考图 + 对话 + 生成过的每一张)
+//!   左:画板列表(一个画板 = 一个主题的一组图:参考图 + 对话 + 生成过和导入的每一张)
 //!   中:当前选中的图(大图)+ 这条线上所有图的胶片条;采用 / 送去建模 / 导出
 //!   右:对话——第一句话出图;之后每句话要么改当前这张、要么重新出一批、要么只是回答
+//!
+//! 图不一定是生成的:自己的图(实拍、草图、找来的参考)可以导入——「导入图片」按钮、直接拖进窗口、或者 Ctrl+V。
+//! 导入的图和生成的图同等地位:能选中、采用、导出、送去建模,也能让 AI 接着改。
+//! 拖到哪、粘到哪决定它的去向:落在画板这边 = 导入成画板上的一张图;落在对话栏 = 只贴到这句话上当参考。
 //!
 //! 和建模工作室同构,思路见 docs/adr/0005-image-studio.md。
 
@@ -11,21 +15,36 @@ use leptos::task::spawn_local;
 use leptos_i18n::{t_string, td_string};
 use pp_common::design::CadDesign;
 use pp_common::imagery::{
-    ImageAspect, ImageBoard, ImageBoardDetail, ImageBoardSummary, ImageMessage, ImageMsgKind, ImageProviderInfo, ImagePurpose, ImageTurnResult,
-    ImageVersion,
+    is_importable_image, ImageAspect, ImageBoard, ImageBoardDetail, ImageBoardSummary, ImageImportResult, ImageMessage, ImageMsgKind,
+    ImageProviderInfo, ImagePurpose, ImageTurnResult, ImageVersion, IMPORT_EXTENSIONS,
 };
 use pp_common::Asset;
 
 use crate::i18n::{use_i18n, Locale};
-use crate::i18n_util::current_locale;
+use crate::i18n_util::{current_locale, localize_backend_err};
 use crate::icon::{Icon, IconKind};
 use crate::ipc::{self, cmd};
-use crate::state::{AppState, Handoff, Route};
+use crate::state::{AppState, DroppedFiles, Handoff, Route, SettingsSection};
 use crate::theme::{get_pref, set_pref};
-use crate::ui::{basics, copy_entry, image_entries, item, separator, Badge, Button, ButtonVariant, Dialog, DialogFooter, EmptyState, IconButton, Segmented, Tone};
+use crate::ui::{
+    basics, copy_entry, image_entries, item, separator, Badge, Button, ButtonVariant, Dialog, DialogFooter, DropPanel, EmptyState, IconButton, Segmented, Tone,
+};
 
 /// 一轮最多涉及 3 张图(当前选中的那张也算一张)——和后端的 MAX_TURN_IMAGES 一致
 const MAX_TURN_IMAGES: usize = 3;
+/// 对话输入框的 id:在它里面按 Ctrl+V 粘贴图片 = 贴到这句话上,而不是导入到画板
+const COMPOSER_ID: &str = "imagery-composer";
+
+/// 正拖着文件悬在窗口上时,光标底下那块地方会怎么处理它
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum DropZone {
+    /// 导入成画板上的图
+    Import,
+    /// 贴到这句话上当参考
+    Attach,
+    /// 拖的不是图片
+    Reject,
+}
 
 fn purpose_name(l: Locale, p: ImagePurpose) -> &'static str {
     match p {
@@ -49,6 +68,8 @@ pub fn ImageryView(state: AppState) -> impl IntoView {
     let busy = RwSignal::new(false);
     let text = RwSignal::new(String::new());
     let pending = RwSignal::new(Vec::<Asset>::new());
+    // 正在导入(大照片要解码、缩放、重新编码,一批可能要几秒)
+    let importing = RwSignal::new(false);
     let count = RwSignal::new(get_pref("imagery_count").and_then(|c| c.parse::<u32>().ok()).unwrap_or(2));
     let delete_dialog = RwSignal::new(false);
     // 要删的是哪个画板 / 要拿掉的是哪张图(`None` = 打开着的那个 / 当前这张)。右键菜单可以指向列表里任意一个
@@ -177,21 +198,197 @@ pub fn ImageryView(state: AppState) -> impl IntoView {
     let send = move || send_text(text.get_untracked());
     // 还能再贴几张:当前选中的那张也占一个名额
     let attach_room = move || MAX_TURN_IMAGES.saturating_sub(pending.with(Vec::len) + current.with(|c| c.is_some() as usize));
-    let attach = move || {
+    let attach_room_now = move || MAX_TURN_IMAGES.saturating_sub(pending.with_untracked(Vec::len) + current.with_untracked(|c| c.is_some() as usize));
+    // 把这几个文件贴到这句话上当参考(「贴一张图」按钮选的、或者拖到对话栏里的)
+    let attach_paths = move |paths: Vec<String>| {
         let Some(id) = board_id() else { return };
-        if attach_room() == 0 {
+        let room = attach_room_now();
+        if room < paths.len() {
+            state.notify_info(td_string!(current_locale(), imagery.drop_attach_full));
+        }
+        let take: Vec<String> = paths.into_iter().take(room).collect();
+        spawn_local(async move {
+            for path in take {
+                match ipc::call::<_, Asset>(cmd::BOARD_ADD_IMAGE, &serde_json::json!({ "id": id, "path": path })).await {
+                    Ok(asset) => pending.update(|l| l.push(asset)),
+                    Err(e) => state.notify_error(e),
+                }
+            }
+        });
+    };
+    let attach = move || {
+        if attach_room_now() == 0 {
             return;
         }
         spawn_local(async move {
-            let Some(path) = ipc::pick_file("Image", &["png", "jpg", "jpeg", "webp"]).await else {
-                return;
-            };
-            match ipc::call::<_, Asset>(cmd::BOARD_ADD_IMAGE, &serde_json::json!({ "id": id, "path": path })).await {
-                Ok(asset) => pending.update(|l| l.push(asset)),
+            if let Some(path) = ipc::pick_file("Image", &IMPORT_EXTENSIONS).await {
+                attach_paths(vec![path]);
+            }
+        });
+    };
+
+    // ---- 导入自己的图 ----
+    // 导入 / 粘贴的结果落到界面上:新图排到胶片条最前面,第一张成为当前图;导不进来的逐个说明
+    let apply_import = move |res: ImageImportResult| {
+        let l = current_locale();
+        let imported = res.versions.len();
+        versions.update(|list| {
+            for v in res.versions.into_iter().rev() {
+                list.insert(0, v);
+            }
+        });
+        if let Some(msg) = res.message {
+            messages.update(|list| list.push(msg));
+        }
+        board.set(Some(res.board));
+        reload_list();
+        state.reload_project_facts();
+        if imported > 0 {
+            state.notify_info(td_string!(l, imagery.imported_toast, count = imported).to_string());
+        }
+        if !res.failed.is_empty() {
+            // 最多念三个名字,别让一条提示占满屏
+            let detail = res
+                .failed
+                .iter()
+                .take(3)
+                .map(|f| {
+                    let why = localize_backend_err(&f.reason);
+                    if f.name.is_empty() { why } else { format!("{} — {why}", f.name) }
+                })
+                .collect::<Vec<_>>()
+                .join(";");
+            state.notify_error(td_string!(l, imagery.import_failed, count = res.failed.len(), detail = detail).to_string());
+        }
+    };
+    // 导入总得有个画板接着:一个都没打开(刚装好、或者全删了)就先建一个
+    let ensure_board = move || async move {
+        if let Some(id) = board_id() {
+            return Some(id);
+        }
+        let args = serde_json::json!({ "purpose": ImagePurpose::ModelRef, "project_id": null, "name": null });
+        match ipc::call::<_, ImageBoard>(cmd::BOARD_CREATE, &args).await {
+            Ok(b) => {
+                let id = b.id.clone();
+                set_pref("imagery_board", &id);
+                messages.set(Vec::new());
+                versions.set(Vec::new());
+                pending.set(Vec::new());
+                board.set(Some(b));
+                Some(id)
+            }
+            Err(e) => {
+                state.notify_error(e);
+                None
+            }
+        }
+    };
+    // `command`:从文件导入(带路径),或者从剪贴板导入
+    let run_import = move |command: &'static str, paths: Option<Vec<String>>| {
+        if busy.get_untracked() || importing.get_untracked() {
+            state.notify_info(td_string!(current_locale(), imagery.import_busy));
+            return;
+        }
+        importing.set(true);
+        spawn_local(async move {
+            if let Some(id) = ensure_board().await {
+                let args = match paths {
+                    Some(paths) => serde_json::json!({ "id": id, "paths": paths }),
+                    None => serde_json::json!({ "id": id }),
+                };
+                match ipc::call::<_, ImageImportResult>(command, &args).await {
+                    Ok(res) => apply_import(res),
+                    Err(e) => state.notify_error(e),
+                }
+            }
+            importing.set(false);
+        });
+    };
+    let import_paths = move |paths: Vec<String>| {
+        if !paths.is_empty() {
+            run_import(cmd::BOARD_IMPORT_IMAGES, Some(paths));
+        }
+    };
+    let import_click = move || {
+        spawn_local(async move {
+            import_paths(ipc::pick_files("Image", &IMPORT_EXTENSIONS).await);
+        });
+    };
+    let paste_images = move || run_import(cmd::BOARD_PASTE_IMAGES, None);
+    // 在输入框里粘贴图片:贴到这句话上当参考
+    let paste_reference = move || {
+        let Some(id) = board_id() else { return };
+        let room = attach_room_now();
+        if room == 0 {
+            state.notify_info(td_string!(current_locale(), imagery.drop_attach_full));
+            return;
+        }
+        spawn_local(async move {
+            match ipc::call::<_, Vec<Asset>>(cmd::BOARD_PASTE_REFERENCE, &serde_json::json!({ "id": id, "max": room })).await {
+                Ok(list) => pending.update(|l| l.extend(list)),
                 Err(e) => state.notify_error(e),
             }
         });
     };
+
+    // ---- 拖进来的文件:落在对话栏 = 贴到这句话上;落在别处 = 导入到画板 ----
+    let chat_ref = NodeRef::<leptos::html::Aside>::new();
+    let over_chat = move |x: f64, y: f64| {
+        // 没打开画板时对话栏被空状态盖着:整块都算「导入」
+        board.with_untracked(Option::is_some)
+            && chat_ref.get_untracked().is_some_and(|el| {
+                let r = el.get_bounding_client_rect();
+                x >= r.left() && x <= r.right() && y >= r.top() && y <= r.bottom()
+            })
+    };
+    let drop_zone = Memo::new(move |_| {
+        state.file_drag.with(|drag| {
+            let drag = drag.as_ref()?;
+            if !drag.paths.iter().any(|p| is_importable_image(p)) {
+                return Some(DropZone::Reject);
+            }
+            Some(if over_chat(drag.x, drag.y) { DropZone::Attach } else { DropZone::Import })
+        })
+    });
+    state.accept_file_drops(move |dropped: DroppedFiles| {
+        let pictures: Vec<String> = dropped.paths.iter().filter(|p| is_importable_image(p)).cloned().collect();
+        if pictures.is_empty() {
+            state.notify_info(td_string!(current_locale(), imagery.drop_reject));
+        } else if over_chat(dropped.x, dropped.y) {
+            attach_paths(pictures);
+        } else {
+            // 整批交给后端:混在里面的不是图片的文件,它会逐个说明为什么没导入
+            import_paths(dropped.paths);
+        }
+    });
+    // Ctrl+V:剪贴板里是图片(截图、浏览器里「复制图片」、资源管理器里复制的图片文件)才接手,文字照常粘贴。
+    // 图片本身由后端去读剪贴板——WebView 里只能拿到一个没有路径的 File。
+    let paste_listener = window_event_listener(leptos::ev::paste, move |ev: web_sys::Event| {
+        use wasm_bindgen::{JsCast, JsValue};
+        // web-sys 的 ClipboardEvent 还算「不稳定接口」(要加编译开关才有),这里只读 `clipboardData.types`,直接按属性取
+        let types = js_sys::Reflect::get(&ev, &JsValue::from_str("clipboardData"))
+            .and_then(|data| js_sys::Reflect::get(&data, &JsValue::from_str("types")))
+            .map(|types| js_sys::Array::from(&types))
+            .unwrap_or_default();
+        let has = |name: &str| types.iter().any(|t| t.as_string().as_deref() == Some(name));
+        if !has("Files") {
+            return;
+        }
+        let target = ev.target().and_then(|t| t.dyn_into::<web_sys::Element>().ok());
+        let in_composer = target.as_ref().is_some_and(|el| el.id() == COMPOSER_ID);
+        let in_editor = target.as_ref().is_some_and(|el| matches!(el.tag_name().as_str(), "INPUT" | "TEXTAREA"));
+        // 输入框里:既有字又有图(从网页、文档里复制的一段)按文字粘;别的输入框(改名)不收图
+        if in_editor && (has("text/plain") || !in_composer) {
+            return;
+        }
+        ev.prevent_default();
+        if in_composer {
+            paste_reference();
+        } else {
+            paste_images();
+        }
+    });
+    on_cleanup(move || paste_listener.remove());
     let select = move |version_id: String| {
         let Some(id) = board_id() else { return };
         spawn_local(async move {
@@ -309,6 +506,18 @@ pub fn ImageryView(state: AppState) -> impl IntoView {
         state.open_menu(&ev, entries);
     };
     let version_menu = Callback::new(move |(ev, id): (web_sys::MouseEvent, String)| version_menu(ev, id));
+    // 右键大图周围的空白处:往这个画板里放图
+    let viewer_menu = move |ev: web_sys::MouseEvent| {
+        let l = current_locale();
+        let working = busy.get_untracked() || importing.get_untracked();
+        state.open_menu(
+            &ev,
+            vec![
+                item(td_string!(l, imagery.import), IconKind::Upload, import_click).disabled_if(working),
+                item(td_string!(l, imagery.paste_image), IconKind::Clipboard, paste_images).disabled_if(working),
+            ],
+        );
+    };
     // ---- 右键菜单用的:对列表里任意一个画板操作 ----
     let start_rename = move |id: String| {
         if board_id().as_deref() == Some(id.as_str()) {
@@ -436,7 +645,7 @@ pub fn ImageryView(state: AppState) -> impl IntoView {
                     {move || match info.get() {
                         None => view! { <span class="text-gray-400">{move || t_string!(i18n, common.loading)}</span> }.into_any(),
                         Some(i) if i.available && !i.planner_ready => view! {
-                            <button type="button" class="text-amber-600 dark:text-amber-400 hover:underline" on:click=move |_| state.go(Route::Settings)>
+                            <button type="button" class="text-amber-600 dark:text-amber-400 hover:underline" on:click=move |_| state.go_settings(SettingsSection::Keys)>
                                 {move || t_string!(i18n, imagery.no_planner)}
                             </button>
                         }.into_any(),
@@ -452,7 +661,7 @@ pub fn ImageryView(state: AppState) -> impl IntoView {
                             </div>
                         }.into_any(),
                         Some(_) => view! {
-                            <button type="button" class="text-amber-600 dark:text-amber-400 hover:underline" on:click=move |_| state.go(Route::Settings)>
+                            <button type="button" class="text-amber-600 dark:text-amber-400 hover:underline" on:click=move |_| state.go_settings(SettingsSection::Keys)>
                                 {move || t_string!(i18n, imagery.no_provider)}
                             </button>
                         }.into_any(),
@@ -483,9 +692,18 @@ pub fn ImageryView(state: AppState) -> impl IntoView {
                     <Show when=move || board.with(Option::is_none)>
                         <div class="absolute inset-0 z-10 bg-gray-50 dark:bg-gray-900">
                             <EmptyState icon=IconKind::Image title=move || t_string!(i18n, imagery.empty_title) hint=move || t_string!(i18n, imagery.empty_hint)>
-                                <Button icon=IconKind::Plus on_click=move || new_board(ImagePurpose::ModelRef)>{move || t_string!(i18n, imagery.new_board)}</Button>
+                                <div class="flex items-center justify-center gap-2">
+                                    <Button icon=IconKind::Plus on_click=move || new_board(ImagePurpose::ModelRef)>{move || t_string!(i18n, imagery.new_board)}</Button>
+                                    <Button variant=ButtonVariant::Secondary icon=IconKind::Upload disabled=Signal::derive(move || importing.get()) on_click=import_click>
+                                        {move || t_string!(i18n, imagery.import)}
+                                    </Button>
+                                </div>
                             </EmptyState>
                         </div>
+                    </Show>
+                    // 正拖着文件悬在窗口上:告诉用户松手之后会发生什么(两块地方去向不同)
+                    <Show when=move || drop_zone.get().is_some()>
+                        <DropHint zone=drop_zone has_board=Signal::derive(move || board.with(Option::is_some)) chat=chat_ref/>
                     </Show>
 
                     // ---- 中:当前的图 + 胶片条 ----
@@ -582,7 +800,7 @@ pub fn ImageryView(state: AppState) -> impl IntoView {
                                 {move || t_string!(i18n, imagery.compliance_note)}
                             </p>
                         </Show>
-                        <div class="relative flex-1 min-h-0 bg-gray-100 dark:bg-gray-900 flex items-center justify-center p-4">
+                        <div class="relative flex-1 min-h-0 bg-gray-100 dark:bg-gray-900 flex items-center justify-center p-4" on:contextmenu=viewer_menu>
                             {move || match current.get() {
                                 Some(v) => {
                                     let vid = v.id.clone();
@@ -596,11 +814,23 @@ pub fn ImageryView(state: AppState) -> impl IntoView {
                                     }.into_any()
                                 }
                                 None => view! {
-                                    <div class="pointer-events-none">
-                                        <EmptyState icon=IconKind::Image title=move || t_string!(i18n, imagery.viewer_empty) hint=move || t_string!(i18n, imagery.viewer_empty_hint)/>
-                                    </div>
+                                    <EmptyState icon=IconKind::Image title=move || t_string!(i18n, imagery.viewer_empty) hint=move || t_string!(i18n, imagery.viewer_empty_hint)>
+                                        <Button
+                                            variant=ButtonVariant::Secondary
+                                            icon=IconKind::Upload
+                                            disabled=Signal::derive(move || busy.get() || importing.get())
+                                            on_click=import_click
+                                        >
+                                            {move || t_string!(i18n, imagery.import)}
+                                        </Button>
+                                    </EmptyState>
                                 }.into_any(),
                             }}
+                            <Show when=move || importing.get()>
+                                <div class="absolute top-3 left-1/2 -translate-x-1/2 px-3 py-1.5 rounded-full bg-white/95 dark:bg-gray-800/95 shadow text-xs text-gray-600 dark:text-gray-300">
+                                    {move || t_string!(i18n, imagery.importing)}
+                                </div>
+                            </Show>
                             <Show when=move || current.with(|v| v.as_ref().is_some_and(|v| v.adopted))>
                                 <div class="absolute left-3 top-3"><Badge tone=Tone::Green>{move || t_string!(i18n, imagery.adopted)}</Badge></div>
                             </Show>
@@ -632,6 +862,18 @@ pub fn ImageryView(state: AppState) -> impl IntoView {
                         // 胶片条:这条线上出过的每一张,最新的在左
                         <Show when=move || !versions.with(Vec::is_empty)>
                             <div class="shrink-0 h-24 px-3 flex items-center gap-2 overflow-x-auto border-t border-gray-200 dark:border-gray-700">
+                                <button
+                                    type="button"
+                                    class="shrink-0 w-[4.5rem] h-[4.5rem] rounded-lg border-2 border-dashed border-gray-300 dark:border-gray-600 \
+                                           text-gray-400 hover:border-brand hover:text-brand flex flex-col items-center justify-center gap-1 \
+                                           transition-colors disabled:opacity-50 disabled:pointer-events-none"
+                                    title=move || t_string!(i18n, imagery.import_tip)
+                                    disabled=move || busy.get() || importing.get()
+                                    on:click=move |_| import_click()
+                                >
+                                    <Icon kind=IconKind::Upload class="w-4 h-4"/>
+                                    <span class="text-[11px]">{move || t_string!(i18n, imagery.import_short)}</span>
+                                </button>
                                 <For each=move || versions.get() key=|v| (v.id.clone(), v.adopted) let:v>
                                     <FilmCell version=v current=current on_select=select on_menu=version_menu/>
                                 </For>
@@ -640,7 +882,7 @@ pub fn ImageryView(state: AppState) -> impl IntoView {
                     </section>
 
                     // ---- 右:对话 ----
-                    <aside class="w-[24rem] shrink-0 h-full flex flex-col border-l border-gray-200 dark:border-gray-700">
+                    <aside node_ref=chat_ref class="w-[24rem] shrink-0 h-full flex flex-col border-l border-gray-200 dark:border-gray-700">
                         <div node_ref=scroller class="flex-1 min-h-0 overflow-y-auto p-3 space-y-3">
                             <Show when=move || messages.with(Vec::is_empty) && !busy.get()>
                                 <div class="pt-8 px-3 text-center space-y-2">
@@ -709,6 +951,7 @@ pub fn ImageryView(state: AppState) -> impl IntoView {
                                 </div>
                             </Show>
                             <textarea
+                                id=COMPOSER_ID
                                 rows=3
                                 class="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-sm leading-relaxed \
                                        text-gray-900 dark:text-gray-100 placeholder:text-gray-400 resize-none focus:outline-none focus:ring-2 focus:ring-brand/40 focus:border-brand"
@@ -828,15 +1071,16 @@ fn FilmCell(
     #[prop(into)] on_select: Callback<(String,)>,
     on_menu: Callback<(web_sys::MouseEvent, String)>,
 ) -> impl IntoView {
+    let i18n = use_i18n();
     let id = StoredValue::new(version.id.clone());
     let active = move || current.with(|c| c.as_ref().is_some_and(|c| id.with_value(|id| &c.id == id)));
     view! {
         <button
             type="button"
-            class="relative shrink-0 w-[4.5rem] h-[4.5rem] rounded-lg overflow-hidden border-2 transition-colors"
+            class="relative shrink-0 w-[4.5rem] h-[4.5rem] rounded-lg overflow-hidden border-2 transition-colors bg-gray-100 dark:bg-gray-800"
             class=("border-brand", active)
             class=("border-transparent", move || !active())
-            title=version.prompt.clone()
+            title=(!version.prompt.is_empty()).then(|| version.prompt.clone())
             on:click=move |_| on_select.run((id.get_value(),))
             on:contextmenu=move |ev| on_menu.run((ev, id.get_value()))
         >
@@ -849,6 +1093,15 @@ fn FilmCell(
             {(version.mode == "edit").then(|| view! {
                 <span class="absolute right-0.5 bottom-0.5 w-4 h-4 rounded-full bg-amber-500 text-white flex items-center justify-center">
                     <Icon kind=IconKind::Wand class="w-2.5 h-2.5"/>
+                </span>
+            })}
+            // 自己导入的(不是模型画的)
+            {(version.mode == "import").then(|| view! {
+                <span
+                    class="absolute right-0.5 bottom-0.5 w-4 h-4 rounded-full bg-sky-500 text-white flex items-center justify-center"
+                    title=move || t_string!(i18n, imagery.imported_badge)
+                >
+                    <Icon kind=IconKind::Upload class="w-2.5 h-2.5"/>
                 </span>
             })}
         </button>
@@ -874,6 +1127,46 @@ fn MessageView(
         }
         state.open_menu(&ev, entries);
     };
+    // 用户导入的一批图:靠右(是用户做的事),点一张就选中它
+    if msg.from_user && msg.kind == ImageMsgKind::Images {
+        let ids = msg.extra.version_ids.clone();
+        let total = ids.len();
+        let batch = StoredValue::new(ids.clone());
+        let all_removed = move || versions.with(|l| batch.with_value(|ids| !ids.iter().any(|id| l.iter().any(|v| &v.id == id))));
+        return view! {
+            <div class="flex flex-col items-end gap-1">
+                <div class="flex flex-wrap justify-end gap-1.5 max-w-[92%]">
+                    {ids.iter().map(|vid| {
+                        let vid = StoredValue::new(vid.clone());
+                        let asset = move || versions.with(|l| vid.with_value(|id| l.iter().find(|v| &v.id == id).map(|v| v.asset_id.clone())));
+                        let active = move || current.with(|c| c.as_ref().is_some_and(|c| vid.with_value(|id| &c.id == id)));
+                        view! {
+                            <Show when=move || asset().is_some()>
+                                <button
+                                    type="button"
+                                    class="w-16 h-16 rounded-lg overflow-hidden border-2 transition-colors bg-gray-100 dark:bg-gray-900"
+                                    class=("border-brand", active)
+                                    class=("border-transparent", move || !active())
+                                    on:click=move |_| on_select.run((vid.get_value(),))
+                                    on:contextmenu=move |ev| on_menu.run((ev, vid.get_value()))
+                                >
+                                    {move || asset().map(|a| view! { <img src=ipc::asset_url(&a) class="w-full h-full object-cover" draggable="false"/> })}
+                                </button>
+                            </Show>
+                        }
+                    }).collect_view()}
+                </div>
+                <p class="pr-1 text-[11px] text-gray-400">
+                    {move || if all_removed() {
+                        t_string!(i18n, imagery.images_removed).to_string()
+                    } else {
+                        t_string!(i18n, imagery.imported_caption, count = total).to_string()
+                    }}
+                </p>
+            </div>
+        }
+        .into_any();
+    }
     if msg.from_user {
         return view! {
             <div class="flex flex-col items-end gap-1" on:contextmenu=text_menu>
@@ -959,4 +1252,42 @@ fn MessageView(
         </div>
     }
     .into_any()
+}
+
+/// 正拖着文件悬在窗口上时盖在工作台上的提示:画板这边 = 导入,对话栏 = 贴到这句话上;光标在哪边,哪边亮。
+/// 整层 `pointer-events-none`——它只是提示,真正的落点由 Tauri 的拖放事件带来的坐标决定。
+#[component]
+fn DropHint(zone: Memo<Option<DropZone>>, has_board: Signal<bool>, chat: NodeRef<leptos::html::Aside>) -> impl IntoView {
+    let i18n = use_i18n();
+    // 对话栏有多宽,提示就从右边让出多宽(没打开画板时整块都是「导入」)
+    let chat_width = move || {
+        if !has_board.get() {
+            return 0.0;
+        }
+        chat.get().map(|el| el.get_bounding_client_rect().width()).unwrap_or(0.0)
+    };
+    view! {
+        <div class="absolute inset-0 z-20 flex pointer-events-none">
+            <div class="flex-1 min-w-0 p-3">
+                <DropPanel
+                    active=Signal::derive(move || zone.get() == Some(DropZone::Import))
+                    icon=IconKind::Upload
+                    text=Signal::derive(move || match (zone.get(), has_board.get()) {
+                        (Some(DropZone::Reject), _) => t_string!(i18n, imagery.drop_reject).to_string(),
+                        (_, true) => t_string!(i18n, imagery.drop_import).to_string(),
+                        (_, false) => t_string!(i18n, imagery.drop_import_new).to_string(),
+                    })
+                />
+            </div>
+            <Show when=move || has_board.get() && zone.get() != Some(DropZone::Reject)>
+                <div class="shrink-0 p-3 pl-0" style:width=move || format!("{}px", chat_width())>
+                    <DropPanel
+                        active=Signal::derive(move || zone.get() == Some(DropZone::Attach))
+                        icon=IconKind::Image
+                        text=Signal::derive(move || t_string!(i18n, imagery.drop_attach).to_string())
+                    />
+                </div>
+            </Show>
+        </div>
+    }
 }

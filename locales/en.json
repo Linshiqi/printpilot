@@ -156,7 +156,7 @@
     "update_found": "Version {{ version }} is available",
     "update_install": "Download and install",
     "update_installing": "Downloading… the app restarts when it is done",
-    "update_found_toast": "Version {{ version }} is available — update under Settings → Software update",
+    "update_found_toast": "Version {{ version }} is available — update under Settings → About & updates",
     "title": "Settings",
     "about": "About",
     "version": "Version",
@@ -199,7 +199,9 @@
     "image_minimax_url_hint": "Defaults to the mainland China site. International accounts should enter the international endpoint.",
     "image_qwen_url": "Qwen endpoint",
     "image_qwen_url_hint": "If the Bailian console gives you a workspace-specific address (https://<workspace>.cn-beijing.maas.aliyuncs.com), enter it here.",
-    "image_saved": "Image settings saved"
+    "image_saved": "Image settings saved",
+    "nav_general": "General",
+    "nav_about": "About & updates"
   },
   "lab": {
     "title": "Tech spikes",
@@ -421,24 +423,24 @@
     "demo_note": "Demo mode: images are placeholder drawings made on this machine. Nothing is sent or billed.",
     "no_boards": "No boards yet. A board is one theme: references, the conversation, and every image made along the way.",
     "empty_title": "Start with one sentence",
-    "empty_hint": "Create a board and say what you need: a white-background modeling reference, an in-use scene, or a post cover.",
+    "empty_hint": "Create a board and say what you need: a white-background modeling reference, an in-use scene, or a post cover. Your own pictures (photos, sketches, references) can simply be dragged in.",
     "delete_board": "Delete this board",
     "delete_confirm": "The board's conversation and images will no longer be shown (the image files stay in your library).",
     "viewer_empty": "No image yet",
-    "viewer_empty_hint": "Say something on the right, e.g. \"a three-slot desk cable clip on white\"",
+    "viewer_empty_hint": "Say something on the right to generate, e.g. \"a three-slot desk cable clip on white\" — or import your own picture: just drag it in",
     "adopted": "Adopted",
     "adopt": "Adopt",
     "unadopt": "Unadopt",
     "export": "Export",
     "to_design": "Send to modeling",
     "chat_empty_title": "What image do you need?",
-    "chat_empty_hint": "The first message generates. After that each message either edits the current image (\"make the background a wooden desk\"), generates a new batch (\"a few more\"), or just asks a question. You can attach reference images.",
+    "chat_empty_hint": "The first message generates. After that each message either edits the current image (\"make the background a wooden desk\"), generates a new batch (\"a few more\"), or just asks a question. You can import your own pictures too (drag them in / Ctrl+V) and have the AI keep editing them.",
     "composer_new_placeholder": "e.g. a three-slot desk cable clip, matte blue, white background (Enter to send, Shift + Enter for a new line)",
     "composer_edit_placeholder": "How should the current image change? wooden desk background / make it orange / a few more",
     "msg_usage": "{{ provider }} · ¥{{ yuan }} · {{ secs }} s",
     "prompt_used": "Prompt used",
     "edit_instruction": "Edit instruction",
-    "attach_image": "Attach an image (the selected image counts too; 3 per turn at most)",
+    "attach_image": "Attach a reference image (for this message only; the selected image counts too; 3 per turn at most)",
     "phase_planning": "Working out what to draw…",
     "phase_rendering": "{{ provider }} is generating {{ count }} image(s); this usually takes 10–60 s…",
     "phase_saving": "Saving…",
@@ -446,7 +448,23 @@
     "remove_image_confirm": "The image will no longer appear on this board (the file stays in your library). Images edited from it are not affected.",
     "remove": "Remove",
     "images_removed": "This batch has been removed from the board",
-    "compliance_note": "Use AI images for post illustrations and non-first listing images only: Xiaohongshu requires the first product image to be a real front-view photo, and AI content must be declared when publishing."
+    "compliance_note": "Use AI images for post illustrations and non-first listing images only: Xiaohongshu requires the first product image to be a real front-view photo, and AI content must be declared when publishing.",
+    "import": "Import images",
+    "import_tip": "Import your own pictures (PNG / JPG / WebP). You can also drag them in, or paste with Ctrl+V",
+    "import_short": "Import",
+    "paste_image": "Paste image",
+    "imported_toast": "Imported {{ count }} image(s)",
+    "import_failed": "{{ count }} not imported: {{ detail }}",
+    "import_busy": "This turn is still running — import once it finishes",
+    "imported_caption": "Imported {{ count }}",
+    "imported_badge": "Imported by you",
+    "drop_import": "Drop to import into this board",
+    "drop_import_new": "Drop to create a board and import",
+    "drop_attach": "Drop to attach as a reference for this message",
+    "drop_attach_full": "A turn takes 3 images at most (the selected one counts) — no room left",
+    "drop_reject": "Only pictures can be imported (PNG / JPG / WebP)",
+    "drop_elsewhere": "To import pictures, drop them onto the Images workbench",
+    "importing": "Importing…"
   },
   "studio": {
     "menu_show_code": "Show code",
@@ -460,7 +478,7 @@
     "new_design": "New design",
     "no_designs": "No designs yet. A design is one part: its references, spec, conversation and every version.",
     "empty_title": "Start from a sentence or a picture",
-    "empty_hint": "Create a design and tell the AI what part you want.",
+    "empty_hint": "Create a design and tell the AI what part you want — or just drag in a picture (a photo, a sketch, a render).",
     "demo_note": "Demo mode: the AI replies are canned (two edits and one answer), but scripts run on the real local engine.",
     "rename": "Click to rename",
     "link_project": "Link to a project",
@@ -501,7 +519,10 @@
     "event_manual": "Code edited by hand and run",
     "msg_usage": "¥{{ yuan }} · {{ secs }} s",
     "stop": "Stop",
-    "live_code": "Writing code · {{ n }} lines so far"
+    "live_code": "Writing code · {{ n }} lines so far",
+    "drop_reference": "Drop to attach as a reference for this design",
+    "drop_reference_new": "Drop to start a new design from this picture",
+    "attach_full": "{{ max }} images at most — the rest were not attached"
   },
   "pricing": {
     "menu_open_model": "Open cost model",
@@ -702,7 +723,9 @@
     "l_price_missing": "No price yet",
     "l_price_below_cost": "Price ¥{{ price }} is below the unit cost",
     "l_license_missing": "Model source not chosen",
-    "l_license_nc": "A non-commercial model cannot be sold"
+    "l_license_nc": "A non-commercial model cannot be sold",
+    "drop_photo": "Drop to import as product photos for this project",
+    "drop_no_project": "Pick a project on the left first, then drag the photos in"
   },
   "backend": {
     "update_check_failed": "Could not check for updates (offline, or the update address is not set up yet)",
@@ -730,6 +753,8 @@
     "cad_script_error": "The model script failed",
     "image_unreadable": "This image could not be read",
     "cancelled": "Stopped. Nothing from this turn was saved; your message is still in the box.",
-    "unknown": "Something went wrong"
+    "unknown": "Something went wrong",
+    "image_unsupported": "Unsupported image format (PNG / JPG / WebP are supported; save HEIC / AVIF as JPG first)",
+    "clipboard_no_image": "There is no image on the clipboard"
   }
 }

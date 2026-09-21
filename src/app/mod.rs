@@ -9,7 +9,7 @@ use crate::controller::ProjectController;
 use crate::i18n::{use_i18n, Locale};
 use crate::icon::IconKind;
 use crate::ipc::{self, cmd};
-use crate::state::{AppState, Route};
+use crate::state::{AppState, DroppedFiles, Route};
 use crate::theme::{apply_theme, get_pref, set_pref};
 use crate::ui::{ContextMenuHost, Toasts};
 use crate::view::board::BoardView;
@@ -168,6 +168,78 @@ fn listen_update_progress(state: AppState) {
     });
 }
 
+/// 把文件拖进窗口。WebView 自己的 HTML5 拖放收不到本地文件的路径,用的是 Tauri 的原生拖放事件:
+/// 悬着的时候更新 `state.file_drag`(页面据此画「松开导入」的提示),松手时交给当前页面登记的处理函数。
+/// 坐标是物理像素,换成 CSS 像素再给页面——页面要拿它和元素的位置比。
+fn listen_file_drops(state: AppState) {
+    use wasm_bindgen::prelude::*;
+
+    #[derive(serde::Deserialize)]
+    struct Position {
+        x: f64,
+        y: f64,
+    }
+    #[derive(serde::Deserialize)]
+    struct Payload {
+        #[serde(default)]
+        paths: Option<Vec<String>>,
+        position: Position,
+    }
+
+    fn read(event: &JsValue) -> Option<(Vec<String>, f64, f64)> {
+        let payload = js_sys::Reflect::get(event, &JsValue::from_str("payload")).ok()?;
+        let p: Payload = serde_wasm_bindgen::from_value(payload).ok()?;
+        let scale = web_sys::window().map(|w| w.device_pixel_ratio()).filter(|s| *s > 0.0).unwrap_or(1.0);
+        Some((p.paths.unwrap_or_default(), p.position.x / scale, p.position.y / scale))
+    }
+
+    let listen = move |name: &'static str, handle: Box<dyn FnMut(JsValue)>| {
+        let closure = Closure::wrap(handle);
+        spawn_local(async move {
+            let _ = ipc::listen(name, closure.into_js_value()).await;
+        });
+    };
+    listen(
+        ipc::event::DRAG_ENTER,
+        Box::new(move |event| {
+            if let Some((paths, x, y)) = read(&event) {
+                state.file_drag.set(Some(DroppedFiles { paths, x, y }));
+            }
+        }),
+    );
+    listen(
+        ipc::event::DRAG_OVER,
+        Box::new(move |event| {
+            if let Some((_, x, y)) = read(&event) {
+                state.file_drag.update(|drag| {
+                    if let Some(drag) = drag {
+                        (drag.x, drag.y) = (x, y);
+                    }
+                });
+            }
+        }),
+    );
+    listen(ipc::event::DRAG_LEAVE, Box::new(move |_| state.file_drag.set(None)));
+    listen(
+        ipc::event::DRAG_DROP,
+        Box::new(move |event| {
+            state.file_drag.set(None);
+            let Some((paths, x, y)) = read(&event) else { return };
+            if paths.is_empty() {
+                return;
+            }
+            match state.file_drop_handler.get_value() {
+                Some((_, handler)) => handler.run(DroppedFiles { paths, x, y }),
+                // 这个页面不收文件:拖进来的是图片的话,告诉用户该拖到哪
+                None if paths.iter().any(|p| pp_common::imagery::is_importable_image(p)) => {
+                    state.notify_info(leptos_i18n::td_string!(crate::i18n_util::current_locale(), imagery.drop_elsewhere));
+                }
+                None => {}
+            }
+        }),
+    );
+}
+
 fn listen_research_progress(state: AppState) {
     use wasm_bindgen::prelude::*;
 
@@ -229,6 +301,7 @@ pub fn App() -> impl IntoView {
     listen_cad_engine_progress(state);
     listen_image_progress(state);
     listen_update_progress(state);
+    listen_file_drops(state);
     // 启动几秒后静默查一次更新:查不到(断网、地址还没配好)什么都不说;有新版本才提示一句
     set_timeout(
         move || {

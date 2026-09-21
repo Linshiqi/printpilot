@@ -53,6 +53,8 @@ pub fn localize_backend_err(raw: &str) -> String {
         errcode::CAD_TIMEOUT => td_string!(l, backend.cad_timeout),
         errcode::CAD_SCRIPT_ERROR => td_string!(l, backend.cad_script_error),
         errcode::IMAGE_UNREADABLE => td_string!(l, backend.image_unreadable),
+        errcode::IMAGE_UNSUPPORTED => td_string!(l, backend.image_unsupported),
+        errcode::CLIPBOARD_NO_IMAGE => td_string!(l, backend.clipboard_no_image),
         errcode::LINT_BLOCKED => td_string!(l, backend.lint_blocked),
         errcode::UPDATE_CHECK_FAILED => td_string!(l, backend.update_check_failed),
         errcode::UPDATE_INSTALL_FAILED => td_string!(l, backend.update_install_failed),

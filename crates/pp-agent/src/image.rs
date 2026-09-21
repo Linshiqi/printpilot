@@ -104,7 +104,8 @@ fn context_block(turn: &ImageTurn<'_>) -> String {
     );
     match (turn.has_current, turn.current_prompt) {
         (true, Some(p)) => out.push_str(&format!("- 当前选中的图:第 1 张图片。它当初的提示词:{}\n", p.trim())),
-        (true, None) => out.push_str("- 当前选中的图:第 1 张图片。\n"),
+        // 没有提示词 = 这张图是用户自己导入的(实拍、草图、别处找的参考),不是模型画的
+        (true, None) => out.push_str("- 当前选中的图:第 1 张图片。它是用户自己导入的,不是模型生成的,所以没有提示词——要重新生成的话,提示词得照着画面从头写。\n"),
         (false, _) => out.push_str("- 当前选中的图:还没有(这是第一次出图,或者用户没有选中任何一张)。\n"),
     }
     if attached > 0 {
@@ -231,6 +232,18 @@ mod tests {
         let last = req.messages.last().unwrap();
         assert_eq!(last.images, images, "当前图在前,新贴的图在后");
         assert!(last.content.contains("它当初的提示词:白底,单个线缆夹") && last.content.contains("新贴了 1 张图"));
+    }
+
+    #[tokio::test]
+    async fn an_imported_picture_is_introduced_as_the_users_own() {
+        let images = vec!["data:image/jpeg;base64,PHOTO".to_string()];
+        let llm = MockLlm::new([r#"{"action":"edit","prompt":"把背景换成纯白,主体保持不变","reply":"只换背景。"}"#]);
+        let mut t = turn("背景换成纯白", &images, true, true);
+        t.current_prompt = None;
+        plan_image_turn(&llm, t, &ImagePlanConfig::default()).await.unwrap();
+        let requests = llm.requests();
+        let ctx = &requests[0].messages.last().unwrap().content;
+        assert!(ctx.contains("用户自己导入的") && !ctx.contains("它当初的提示词"), "导入的图没有提示词,要明说:{ctx}");
     }
 
     #[tokio::test]

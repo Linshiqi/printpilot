@@ -156,7 +156,7 @@
     "update_found": "有新版本 {{ version }}",
     "update_install": "下载并安装",
     "update_installing": "正在下载…装好后应用会自动重启",
-    "update_found_toast": "有新版本 {{ version }},可以在「设置 → 软件更新」里升级",
+    "update_found_toast": "有新版本 {{ version }},可以在「设置 → 关于与更新」里升级",
     "title": "设置",
     "about": "关于",
     "version": "版本",
@@ -189,7 +189,7 @@
     "key_test": "测试连接",
     "key_test_ok": "连接正常,用时 {{ ms }} ms",
     "key_get": "去获取",
-    "image": "出图",
+    "image": "图片生成",
     "image_hint": "两家都配了时:生成用你选的那家(自动 = 便宜的那家),按指令改图总是用能改图的那家。",
     "image_provider": "生成时优先用",
     "image_provider_auto": "自动",
@@ -199,7 +199,9 @@
     "image_minimax_url_hint": "默认是国内站。国际站的账号请填国际站的接入地址。",
     "image_qwen_url": "通义千问接入地址",
     "image_qwen_url_hint": "百炼控制台给你的地址如果带工作空间(https://<工作空间>.cn-beijing.maas.aliyuncs.com),填在这里。",
-    "image_saved": "出图设置已保存"
+    "image_saved": "出图设置已保存",
+    "nav_general": "通用",
+    "nav_about": "关于与更新"
   },
   "lab": {
     "title": "技术预研",
@@ -421,24 +423,24 @@
     "demo_note": "演示模式:图是本机画的示意图,不联网、不花钱。",
     "no_boards": "还没有画板。一个画板 = 一个主题的一组图:参考图、对话和出过的每一张。",
     "empty_title": "从一句话开始出图",
-    "empty_hint": "新建一个画板,说说你想要什么图:白底的建模参考图、使用场景图,或者笔记封面。",
+    "empty_hint": "新建一个画板,说说你想要什么图:白底的建模参考图、使用场景图,或者笔记封面。自己的图(实拍、草图、找来的参考)也可以直接拖进来。",
     "delete_board": "删除这个画板",
     "delete_confirm": "删除后,这个画板的对话和图都不再显示(图片文件仍留在资料库里)。",
     "viewer_empty": "还没有图",
-    "viewer_empty_hint": "在右边说一句话,比如「一个三槽的桌面线缆夹,白底」",
+    "viewer_empty_hint": "在右边说一句话让 AI 出图,比如「一个三槽的桌面线缆夹,白底」;也可以导入自己的图——直接拖进来就行",
     "adopted": "已采用",
     "adopt": "采用",
     "unadopt": "取消采用",
     "export": "导出",
     "to_design": "送去建模",
     "chat_empty_title": "想要一张什么图?",
-    "chat_empty_hint": "第一句话出图;之后每句话要么改当前这张(「背景换成木桌面」),要么重新出一批(「再来几张」),也可以直接提问。可以贴参考图。",
+    "chat_empty_hint": "第一句话出图;之后每句话要么改当前这张(「背景换成木桌面」),要么重新出一批(「再来几张」),也可以直接提问。自己的图也能导入(拖进来 / Ctrl+V),导入之后同样可以让 AI 接着改。",
     "composer_new_placeholder": "例如:一个三槽的桌面线缆夹,哑光蓝色,白底(回车发送,Shift + 回车换行)",
     "composer_edit_placeholder": "说说怎么改当前这张:背景换成木桌面 / 颜色改成橙色 / 再来几张",
     "msg_usage": "{{ provider }} · ¥{{ yuan }} · {{ secs }} 秒",
     "prompt_used": "用的提示词",
     "edit_instruction": "编辑指令",
-    "attach_image": "贴一张图(当前选中的那张也算在内,一轮最多 3 张)",
+    "attach_image": "贴一张参考图(只跟着这句话走;当前选中的那张也算在内,一轮最多 3 张)",
     "phase_planning": "正在想怎么画…",
     "phase_rendering": "{{ provider }} 正在出图({{ count }} 张),一般要十几秒到一分钟…",
     "phase_saving": "正在保存…",
@@ -446,7 +448,23 @@
     "remove_image_confirm": "这张图不再出现在这个画板里(图片文件仍留在资料库里)。从它改出来的图不受影响。",
     "remove": "拿掉",
     "images_removed": "这一批图已经从画板上拿掉了",
-    "compliance_note": "AI 生成的图只用于笔记配图和主图的非首图:小红书要求商品首图是实物正面图,发布时还要声明「AI 生成」。"
+    "compliance_note": "AI 生成的图只用于笔记配图和主图的非首图:小红书要求商品首图是实物正面图,发布时还要声明「AI 生成」。",
+    "import": "导入图片",
+    "import_tip": "导入自己的图片(PNG / JPG / WebP)。也可以把图片直接拖进来,或者按 Ctrl+V 粘贴",
+    "import_short": "导入",
+    "paste_image": "粘贴图片",
+    "imported_toast": "导入了 {{ count }} 张图片",
+    "import_failed": "{{ count }} 个没导入:{{ detail }}",
+    "import_busy": "这一轮还没结束,等它出完再导入",
+    "imported_caption": "导入了 {{ count }} 张",
+    "imported_badge": "自己导入的图",
+    "drop_import": "松开,导入到这个画板",
+    "drop_import_new": "松开,新建一个画板并导入",
+    "drop_attach": "松开,贴到这句话上当参考",
+    "drop_attach_full": "一轮最多 3 张图(当前选中的也算),这里放不下了",
+    "drop_reject": "只能导入图片(PNG / JPG / WebP)",
+    "drop_elsewhere": "要导入图片,请拖到「图片」工作台里",
+    "importing": "正在导入…"
   },
   "studio": {
     "menu_show_code": "显示代码",
@@ -460,7 +478,7 @@
     "new_design": "新建设计",
     "no_designs": "还没有设计。一个设计 = 一个零件:参考图、规格、对话和它的全部版本。",
     "empty_title": "从一句话或一张图开始",
-    "empty_hint": "新建一个设计,告诉 AI 你想做什么零件。",
+    "empty_hint": "新建一个设计,告诉 AI 你想做什么零件;也可以把一张图(实拍、草图、效果图)直接拖进来。",
     "demo_note": "演示模式:AI 的回答是内置脚本(两种修改 + 一种回答),但代码在本机真引擎上执行。",
     "rename": "点击重命名",
     "link_project": "关联到项目",
@@ -501,7 +519,10 @@
     "event_manual": "手改代码并运行",
     "msg_usage": "¥{{ yuan }} · {{ secs }} 秒",
     "stop": "停止",
-    "live_code": "正在写代码 · 已写 {{ n }} 行"
+    "live_code": "正在写代码 · 已写 {{ n }} 行",
+    "drop_reference": "松开,把图贴到这个设计上当参考",
+    "drop_reference_new": "松开,新建一个设计,这张图就是它的参考图",
+    "attach_full": "一次最多贴 {{ max }} 张图,多出来的没有贴上"
   },
   "pricing": {
     "menu_open_model": "打开成本模型",
@@ -702,7 +723,9 @@
     "l_price_missing": "还没填售价",
     "l_price_below_cost": "售价 ¥{{ price }} 低于单位成本",
     "l_license_missing": "还没选模型来源",
-    "l_license_nc": "非商用授权的模型不能拿来卖"
+    "l_license_nc": "非商用授权的模型不能拿来卖",
+    "drop_photo": "松开,导入为这个项目的实拍图",
+    "drop_no_project": "先在左边选一个项目,再把实拍图拖进来"
   },
   "backend": {
     "update_check_failed": "检查更新失败(网络不通,或者更新地址还没有配置好)",
@@ -730,6 +753,8 @@
     "cad_script_error": "模型代码运行出错",
     "image_unreadable": "这张图片读不出来",
     "cancelled": "已停止。这一轮什么都没有保存,输入框里的话还在。",
-    "unknown": "出错了"
+    "unknown": "出错了",
+    "image_unsupported": "不支持这种图片格式(支持 PNG / JPG / WebP;HEIC、AVIF 请先另存为 JPG)",
+    "clipboard_no_image": "剪贴板里没有图片"
   }
 }

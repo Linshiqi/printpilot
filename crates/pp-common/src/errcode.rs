@@ -27,6 +27,9 @@ pub const CAD_ENGINE_FAILED: &str = "cad_engine_failed";
 pub const CAD_TIMEOUT: &str = "cad_timeout";
 pub const CAD_SCRIPT_ERROR: &str = "cad_script_error";
 pub const IMAGE_UNREADABLE: &str = "image_unreadable";
+/// 导入图片:不是能导入的格式(HEIC、AVIF、文件夹…)/ 剪贴板里没有图片
+pub const IMAGE_UNSUPPORTED: &str = "image_unsupported";
+pub const CLIPBOARD_NO_IMAGE: &str = "clipboard_no_image";
 /// 用户自己点了「停止」:不是故障,界面不该当错误报
 pub const CANCELLED: &str = "cancelled";
 /// 合规检查没过,又没写跳过的原因:不能出发布包

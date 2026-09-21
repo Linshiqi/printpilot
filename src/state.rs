@@ -70,6 +70,53 @@ impl Route {
     }
 }
 
+/// 设置页的二级菜单:一次只显示一组设置,不用在一长页里滚着找。
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum SettingsSection {
+    /// 外观、语言、演示模式
+    General,
+    /// 各家接口的密钥
+    Keys,
+    /// 出图用哪家、接入地址
+    Images,
+    /// 资料库在哪
+    Library,
+    /// 软件更新、版本信息
+    About,
+}
+
+impl SettingsSection {
+    pub const ALL: [SettingsSection; 5] = [
+        SettingsSection::General,
+        SettingsSection::Keys,
+        SettingsSection::Images,
+        SettingsSection::Library,
+        SettingsSection::About,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SettingsSection::General => "general",
+            SettingsSection::Keys => "keys",
+            SettingsSection::Images => "images",
+            SettingsSection::Library => "library",
+            SettingsSection::About => "about",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<SettingsSection> {
+        SettingsSection::ALL.into_iter().find(|x| x.as_str() == s)
+    }
+}
+
+/// 拖进窗口的文件:路径 + 光标位置(CSS 像素,相对窗口左上角)。
+#[derive(Clone, Debug, PartialEq)]
+pub struct DroppedFiles {
+    pub paths: Vec<String>,
+    pub x: f64,
+    pub y: f64,
+}
+
 /// 模型正在说的话(流式):后端把片段攒 50 毫秒发一次,这里接起来。
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct LiveAnswer {
@@ -159,6 +206,12 @@ pub struct AppState {
     pub update_progress: RwSignal<Option<(u64, u64)>>,
     /// 开着的右键菜单(`ui::context_menu`)。元素上用 `state.open_menu(&ev, 菜单项)` 打开
     pub context_menu: RwSignal<Option<crate::ui::ContextMenu>>,
+    /// 设置页停在哪一组(记在界面偏好里;别的页面说「去设置」时也能直接指到某一组)
+    pub settings_section: RwSignal<SettingsSection>,
+    /// 正拖着文件悬在窗口上(松手或移出窗口就清空)。页面读它来画「松开导入」的提示
+    pub file_drag: RwSignal<Option<DroppedFiles>>,
+    /// 当前页面怎么接收拖进来的文件(`accept_file_drops` 登记)。没登记 = 这个页面不收文件
+    pub file_drop_handler: StoredValue<Option<(u32, Callback<DroppedFiles>)>>,
 }
 
 impl AppState {
@@ -188,7 +241,29 @@ impl AppState {
             update_available: RwSignal::new(None),
             update_progress: RwSignal::new(None),
             context_menu: RwSignal::new(None),
+            settings_section: RwSignal::new(
+                crate::theme::get_pref("settings_section")
+                    .and_then(|s| SettingsSection::parse(&s))
+                    .unwrap_or(SettingsSection::General),
+            ),
+            file_drag: RwSignal::new(None),
+            file_drop_handler: StoredValue::new(None),
         }
+    }
+
+    /// 登记「这个页面接收拖进窗口的文件」。在页面组件体里调用,页面卸载时自动撤掉。
+    pub fn accept_file_drops(self, handler: impl Fn(DroppedFiles) + Send + Sync + 'static) {
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+        let mine = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.file_drop_handler.set_value(Some((mine, Callback::new(handler))));
+        // 换页时新页面先挂载、旧页面后卸载:只撤自己登记的那个,别把新页面刚登记的撤了
+        on_cleanup(move || {
+            self.file_drop_handler.update_value(|slot| {
+                if slot.as_ref().is_some_and(|(id, _)| *id == mine) {
+                    *slot = None;
+                }
+            });
+        });
     }
 
     /// 重新数一遍各项目名下的产出。工作台里做了可能改变清单的事(出图、采用、建出模型、关联项目…)之后调用。
@@ -246,6 +321,13 @@ impl AppState {
         self.route.set(route);
         crate::theme::set_pref("route", route.as_str());
     }
+
+    /// 去设置页的某一组(「还没配密钥 · 去设置」直接落在「接口密钥」上)。
+    pub fn go_settings(self, section: SettingsSection) {
+        self.settings_section.set(section);
+        crate::theme::set_pref("settings_section", section.as_str());
+        self.go(Route::Settings);
+    }
 }
 
 #[cfg(test)]
@@ -271,6 +353,10 @@ mod tests {
             assert_eq!(Route::parse(r.as_str()), Some(r));
         }
         assert_eq!(Route::parse("nowhere"), None);
+        for s in SettingsSection::ALL {
+            assert_eq!(SettingsSection::parse(s.as_str()), Some(s));
+        }
+        assert_eq!(SettingsSection::parse("nowhere"), None);
     }
 
     #[test]
