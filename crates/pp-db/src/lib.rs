@@ -7,6 +7,7 @@ mod assets;
 mod cad;
 mod costs;
 mod designs;
+mod imagery;
 mod projects;
 mod research;
 pub mod schema;
@@ -20,6 +21,7 @@ use rusqlite::Connection;
 pub use assets::NewAsset;
 pub use cad::NewCadVersion;
 pub use designs::NewCadMessage;
+pub use imagery::{NewImageMessage, NewImageVersion};
 pub use schema::SCHEMA_VERSION;
 
 #[derive(Debug)]

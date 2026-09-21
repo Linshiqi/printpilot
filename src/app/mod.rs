@@ -13,6 +13,7 @@ use crate::state::{AppState, Route};
 use crate::theme::{apply_theme, get_pref, set_pref};
 use crate::ui::Toasts;
 use crate::view::board::BoardView;
+use crate::view::imagery::ImageryView;
 use crate::view::lab::LabView;
 use crate::view::studio::StudioView;
 use crate::view::placeholder::ComingSoon;
@@ -81,6 +82,32 @@ fn listen_cad_progress(state: AppState) {
     });
 }
 
+fn listen_image_progress(state: AppState) {
+    use wasm_bindgen::prelude::*;
+
+    #[derive(serde::Deserialize)]
+    struct Payload {
+        phase: String,
+        #[serde(default)]
+        provider: String,
+        #[serde(default)]
+        count: u32,
+    }
+
+    let closure = Closure::wrap(Box::new(move |event: JsValue| {
+        let Ok(payload) = js_sys::Reflect::get(&event, &JsValue::from_str("payload")) else {
+            return;
+        };
+        let Ok(p) = serde_wasm_bindgen::from_value::<Payload>(payload) else {
+            return;
+        };
+        state.image_progress.set(Some((p.phase, p.provider, p.count)));
+    }) as Box<dyn FnMut(JsValue)>);
+    spawn_local(async move {
+        let _ = ipc::listen(ipc::event::IMAGE_PROGRESS, closure.into_js_value()).await;
+    });
+}
+
 fn listen_research_progress(state: AppState) {
     use wasm_bindgen::prelude::*;
 
@@ -139,6 +166,7 @@ pub fn App() -> impl IntoView {
     listen_research_progress(state);
     listen_cad_progress(state);
     listen_cad_engine_progress(state);
+    listen_image_progress(state);
     spawn_local(async move {
         match ipc::call_no_args::<AppInfo>(cmd::APP_INFO).await {
             Ok(info) => state.app_info.set(Some(info)),
@@ -153,6 +181,7 @@ pub fn App() -> impl IntoView {
                 {move || match state.route.get() {
                     Route::Projects => view! { <BoardView state=state/> }.into_any(),
                     Route::Lab => view! { <LabView state=state/> }.into_any(),
+                    Route::Images => view! { <ImageryView state=state/> }.into_any(),
                     Route::Studio => view! { <StudioView state=state/> }.into_any(),
                     Route::Settings => view! { <SettingsView state=state/> }.into_any(),
                     Route::Dashboard => view! {

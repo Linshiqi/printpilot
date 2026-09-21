@@ -68,6 +68,24 @@ pub mod cmd {
     pub const DESIGN_RUN_CODE: &str = "design_run_code";
     pub const DESIGN_REVIEW: &str = "design_review";
 
+    pub const IMAGE_PROVIDER_INFO: &str = "image_provider_info";
+    pub const IMAGE_SETTINGS_GET: &str = "image_settings_get";
+    pub const IMAGE_SETTINGS_SET: &str = "image_settings_set";
+    pub const BOARD_LIST: &str = "board_list";
+    pub const BOARD_CREATE: &str = "board_create";
+    pub const BOARD_GET: &str = "board_get";
+    pub const BOARD_RENAME: &str = "board_rename";
+    pub const BOARD_DELETE: &str = "board_delete";
+    pub const BOARD_SET_OPTIONS: &str = "board_set_options";
+    pub const BOARD_LINK_PROJECT: &str = "board_link_project";
+    pub const BOARD_SELECT: &str = "board_select";
+    pub const BOARD_ADOPT: &str = "board_adopt";
+    pub const BOARD_REMOVE_IMAGE: &str = "board_remove_image";
+    pub const BOARD_ADD_IMAGE: &str = "board_add_image";
+    pub const BOARD_SEND: &str = "board_send";
+    pub const BOARD_TO_DESIGN: &str = "board_to_design";
+    pub const BOARD_EXPORT: &str = "board_export";
+
     pub const OPEN_URL: &str = "plugin:opener|open_url";
 }
 
@@ -76,6 +94,7 @@ pub mod event {
     pub const RESEARCH_PROGRESS: &str = "research-progress";
     pub const CAD_PROGRESS: &str = "cad-progress";
     pub const CAD_ENGINE_PROGRESS: &str = "cad-engine-progress";
+    pub const IMAGE_PROGRESS: &str = "image-progress";
 }
 
 #[wasm_bindgen]

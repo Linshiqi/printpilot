@@ -10,7 +10,7 @@
 | 调研大脑（LLM） | DeepSeek `deepseek-flash` | 审校步骤用 `deepseek-v4-pro`；任何 OpenAI 兼容模型 | 一次调研 ≈ ¥0.3~0.5 | 同步 / 流式 |
 | 联网搜索 | 智谱 Web Search `search_std` | 火山「豆包搜索」、博查 | ¥0.01~0.036 / 次 | 同步 |
 | 截图识别（视觉） | `deepseek-flash`（同一把密钥） | qwen-vl-ocr、qwen3-vl-flash、GLM-4.6V-Flash（免费） | 可忽略 | 同步 |
-| 建模参考图 / 场景图 | MiniMax `image-01` | Seedream 5.0 lite、qwen-image-3.0 | ¥0.025 / 张（备选 ¥0.18~0.30） | 同步，URL 24h 过期 |
+| 建模参考图 / 场景图（**图片工作台，已接入**） | 生成：MiniMax `image-01`；按指令改图：通义千问 `qwen-image-2.0` | Seedream 5.0 lite（未接） | ¥0.025 / 张（千问 ≈ ¥0.2）+ 每轮规划 ≈ ¥0.01~0.02 | 同步，URL 24h 过期 → 立刻落盘 |
 | 实拍图换背景 | 抠图 + 百炼 `wanx-background-generation-v2`（**主体像素不变**） | Seedream 5.0 pro 定位编辑、qwen-image-edit-plus | ¥0.08 / 张 | 异步 |
 | **看图 → 代码建模（3D 主路线）** | `deepseek-flash` 看图出规格与复核 + `deepseek-v4-pro`（思考）写 build123d 脚本；**本机引擎执行** | 任何 OpenAI 兼容的视觉 / 代码模型 | ≈ ¥0.1 / 个模型；改参数 ¥0 | 同步；本机执行约 4 s / 次 |
 | 图生 3D 网格（有机造型，延后） | Tripo H3.1（只出白模） | 腾讯混元生 3D、火山方舟上的 Seed3D / Hyper3D / Hi3D | ≈ ¥1.5 / 次（白模）+ 转换 ¥0.4~0.7 | 异步，需轮询 |
@@ -70,8 +70,8 @@
 | 模型 | 能力 | 价格 |
 |------|------|------|
 | 火山 Seedream 5.0 lite / pro | 多图参考（最多 10 张）、组图、bbox 定位编辑、图层拆分；`watermark` 默认 **true**（调用时要显式设置） | lite ¥0.22；pro ¥0.30~0.60 |
-| 阿里 qwen-image-3.0 / pro | 生成编辑一体，1~3 张输入图，主体一致性，中文小字渲染强 | ¥0.18 / ¥0.25~0.5 |
-| qwen-image-edit-plus | 纯编辑 | ¥0.2 |
+| 阿里 `qwen-image-2.0` / `-pro`（**已接入**，见 §4.4） | 生成编辑一体，1~3 张输入图，主体一致性，中文小字渲染强 | ≈ ¥0.2（价格以百炼计费页为准，未实测） |
+| `qwen-image-edit-plus` / `-max` | 纯编辑（同一个接口，换模型名即可） | ≈ ¥0.2 |
 | 百炼 `wanx-background-generation-v2` | **商品换背景**：输入透明底主体图，主体像素保持不变 | ¥0.08 |
 | 智谱 glm-image / CogView-4 | 仅文生图，汉字渲染强 | ¥0.1 / ¥0.06 |
 
@@ -81,6 +81,21 @@
 - 小红书《虚假失真不实细则》（2025-12-25 生效）把「**使用 AI 技术批量更换场景、主体等模板化操作痕迹**」列为违规示例，处罚从限流到冻结店铺。
 - 因此：「实拍图换背景」功能**只用于笔记配图与主图的非首图**，不提供批量模板化换景；优先走「抠图 + 背景生成」这条主体像素不变的路线；生成后在界面上并排显示原图供人工比对。
 - 笔记图片：推荐 3:4（1080×1440），整篇比例统一，≤ 18 张；标题 ≤ 20 字；正文 ≤ 1000 字；话题上限有 5 与 10 两种说法（未核实 → 默认按 5 个生成）。
+
+### 4.4 已接入的两家（图片工作台，[ADR-0005](adr/0005-image-studio.md)；2026-09-20/21 按官方文档核实，**未用真密钥实测**）
+
+| | MiniMax `image-01` | 通义千问图像 `qwen-image-2.0` |
+|---|---|---|
+| 适配器 | `pp_providers::image::MiniMaxImage`（`can_edit = false`） | `pp_providers::image::QwenImage`（`can_edit = true`） |
+| 接口 | `POST {base}/v1/image_generation` | `POST {base}/api/v1/services/aigc/multimodal-generation/generation` |
+| 默认 `base` | `https://api.minimax.cn` | `https://dashscope.aliyuncs.com`；百炼文档示例是带工作空间的 `https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com` → **设置页可改** |
+| 请求 | `model`、`prompt`、`aspect_ratio`、`n`、`response_format: "base64"`、`prompt_optimizer: false`、`aigc_watermark: false` | `input.messages[0].content[]`：先 `{"image": …}`（1~3 张，data URL 或 URL）后 `{"text": …}`；`parameters`：`n`、`size: "宽*高"`（**编辑时不传**）、`watermark: false`、`prompt_extend: false` |
+| 响应 | `data.image_base64[]`；`base_resp.status_code` ≠ 0 即失败（1004 / 2049 → 密钥；1008 → 余额；1002 / 1039 / 2045 → 限流） | `output.choices[].message.content[].image`（URL，24 h 过期 → 立刻下载）；失败是顶层 `{code, message}` |
+| 一次几张 | 1~9 | 1~6 |
+
+规划（决定这一轮是生成 / 编辑 / 只回答，并写提示词）用 DeepSeek 的视觉模型 `deepseek-flash`（JSON 模式），每轮约 1~2 分钱。
+
+火山 Seedream：2026-09-21 官方文档页无法打开，接口细节未核实 → **没有写适配器**。
 
 ## 5. 3D 生成
 

@@ -87,6 +87,25 @@ pub fn ChatPane(
                         </div>
                         <p class="text-sm font-medium text-gray-800 dark:text-gray-100">{move || t_string!(i18n, studio.chat_empty_title)}</p>
                         <p class="text-xs leading-relaxed text-gray-500 dark:text-gray-400">{move || t_string!(i18n, studio.chat_empty_hint)}</p>
+                        // 从「图片」送过来的设计已经带着参考图:让人看得见它,并给一句现成的开场白
+                        <Show when=move || design.with(|d| d.as_ref().is_some_and(|d| !d.ref_asset_ids.is_empty()))>
+                            <div class="pt-4 space-y-2">
+                                <div class="flex justify-center gap-2">
+                                    {move || design.with(|d| d.as_ref().map(|d| d.ref_asset_ids.clone()).unwrap_or_default()).into_iter().map(|id| view! {
+                                        <img src=ipc::asset_url(&id) class="w-20 h-20 object-cover rounded-lg border border-gray-200 dark:border-gray-700" draggable="false"/>
+                                    }).collect_view()}
+                                </div>
+                                <p class="text-xs leading-relaxed text-gray-500 dark:text-gray-400">{move || t_string!(i18n, studio.refs_ready)}</p>
+                                <button
+                                    type="button"
+                                    class="px-2.5 py-1 rounded-full border border-gray-200 dark:border-gray-600 text-[11px] text-gray-600 dark:text-gray-300 \
+                                           hover:border-brand hover:text-brand transition-colors"
+                                    on:click=move |_| text.set(t_string!(i18n, studio.refs_opening).to_string())
+                                >
+                                    {move || t_string!(i18n, studio.refs_opening)}
+                                </button>
+                            </div>
+                        </Show>
                     </div>
                 </Show>
                 <For each=move || messages.get() key=|m| m.id.clone() let:m>

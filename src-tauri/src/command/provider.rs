@@ -107,6 +107,8 @@ pub async fn test_provider(ctx: State<'_, Arc<AppCtx>>, id: ProviderId) -> Resul
             q.count = 1;
             search.search(q).await.map_err(provider_err)?;
         }
+        // 出图的两家没有「不花钱的探活接口」:出一张最便宜的图(MiniMax 约 3 分钱,通义千问约 2 毛)
+        ProviderId::Minimax | ProviderId::QwenImage => super::imagery::test_image_provider(&ctx, id).await?,
     }
     let ms = started.elapsed().as_millis() as u64;
     log::info!("[provider] {} 连接正常,{ms}ms", id.as_str());

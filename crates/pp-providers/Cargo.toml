@@ -5,6 +5,7 @@ edition = "2021"
 description = "第三方供应商适配器:LLM、联网搜索(之后还有出图、3D)。业务代码只依赖这里的 trait,不直接依赖任何一家。"
 
 [dependencies]
+pp-common = { path = "../pp-common" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 async-trait = "0.1"

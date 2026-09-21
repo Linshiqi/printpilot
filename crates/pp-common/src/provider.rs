@@ -9,15 +9,21 @@ pub enum ProviderId {
     Deepseek,
     /// 联网搜索
     ZhipuSearch,
+    /// 出图:MiniMax image-01(便宜,只能文生图)
+    Minimax,
+    /// 出图 + 改图:通义千问图像(阿里云百炼)
+    QwenImage,
 }
 
 impl ProviderId {
-    pub const ALL: [ProviderId; 2] = [ProviderId::Deepseek, ProviderId::ZhipuSearch];
+    pub const ALL: [ProviderId; 4] = [ProviderId::Deepseek, ProviderId::ZhipuSearch, ProviderId::Minimax, ProviderId::QwenImage];
 
     pub fn as_str(self) -> &'static str {
         match self {
             ProviderId::Deepseek => "deepseek",
             ProviderId::ZhipuSearch => "zhipu_search",
+            ProviderId::Minimax => "minimax",
+            ProviderId::QwenImage => "qwen_image",
         }
     }
 
@@ -26,6 +32,8 @@ impl ProviderId {
         match self {
             ProviderId::Deepseek => "https://platform.deepseek.com/api_keys",
             ProviderId::ZhipuSearch => "https://bigmodel.cn/usercenter/proj-mgmt/apikeys",
+            ProviderId::Minimax => "https://platform.minimax.cn/user-center/basic-information/interface-key",
+            ProviderId::QwenImage => "https://bailian.console.aliyun.com/?tab=model#/api-key",
         }
     }
 }

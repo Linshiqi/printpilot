@@ -324,6 +324,24 @@ snapshot(containerId) → PNG                    // 看板缩略图
 - **FDM 优先**：不做抽壳（FDM 靠填充率）；单色为主，默认只向供应商要白模。
 - **两条建模路线**：见本节开头。代码式 CAD 的 STL 同样是普通模型资产（入库时做一次网格分析写进 `meta_json`），本节的度量、估算、导出对它同样适用。
 
+### 8.3 图片工作台（出图 / 改图，[ADR-0005](adr/0005-image-studio.md)）
+
+和建模工作室同构：对话是主线，「当前选中的那张图」是对话的宾语。一轮 = 三步，**整轮成功才入库**：
+
+```
+用户的话(+ 贴的图) ─┐
+当前图(缩到 1024 给规划模型看) ─┼─► ① 规划  pp_agent::plan_image_turn(deepseek-flash,JSON 模式,prompts/image_plan.md)
+用途 · 画幅 · 能不能编辑 ─────┘        └─► {action: generate | edit | reply, prompt, count, reply}
+                                   ② 出图  pp_providers::image::ImageProvider(请求里带图 = 编辑;给的是**原图字节**,不重压)
+                                          生成 → 最便宜的那家;编辑 → can_edit() 的那家;reply → 不出图
+                                   ③ 落盘 + 入库  资产(ai_generated)→ image_versions(parent_id = 被改的那张)→ 两条消息 → 当前图 = 新出的第一张
+```
+
+- 进度事件 `image-progress`：`planning → rendering(供应商, 张数) → saving`。
+- 供应商没有能编辑的：规划模型被告知这一点，改写提示词重新生成并如实说明；后端再兜一层校验。
+- 演示模式：规划走三条固定路线，出图用本机「画师」（编辑 = 只换背景色、主体像素不动）。
+- 命令在 `src-tauri/src/command/imagery.rs`，前端在 `src/view/imagery/`。
+
 ## 9. 数据模型
 
 SQLite 约定：主键为 UUIDv7 文本；时间为毫秒整数；金额为整数「分」；灵活结构存 JSON 文本；软删除 `deleted_at`（为将来同步留余地）。一个资料库 = 一个数据库文件，因此不需要租户列。
@@ -365,6 +383,7 @@ erDiagram
 | `jobs` | `type` · `provider` · `provider_task_id` · `status` · `input_json` · `output_json` · `error_code` · `attempts` · `run_after` · `dedupe_key` · `est_cost` · `cost` | 调度器直接读写这张表 |
 | `cad_versions`（schema v2） | `parent_id` · `source`(manual/generate/param/edit) · `note` · `code` · `spec_json` · `ref_asset_ids_json` · `report_json` · `params_json` · `metrics_json` · `stl_asset_id` · `step_asset_id` | 代码式 CAD 的版本树：每次生成、改参数、指令修补、手写运行都是一个新版本；规格与参考图由子版本沿用（复核要用） |
 | `cad_designs` · `cad_messages`（schema v3） | 设计：`name` · `project_id` · `spec_json` · `ref_asset_ids_json` · `current_version_id` · `thumb`；消息：`role`(user/assistant/event) · `kind`(text/spec/build/failed/review/param/manual) · `content` · `extra_json` · `image_asset_ids_json` · `version_id` | 建模工作室：一个设计 = 一个零件的一条建模线索；对话与「改参数 / 手改代码」事件在同一条时间线上；`cad_versions.design_id` 把版本归到设计名下 |
+| `image_boards` · `image_versions` · `image_messages`（schema v4） | 画板：`name` · `project_id` · `purpose`(model_ref/scene/cover/free) · `aspect` · `ref_asset_ids_json` · `current_image_id`；图：`parent_id` · `asset_id` · `prompt` · `mode`(generate/edit) · `provider` · `model` · `adopted` · `deleted_at`；消息：`from_user` · `kind`(text/images) · `content` · `extra_json` · `image_asset_ids_json` | 图片工作台（[ADR-0005](adr/0005-image-studio.md)），和建模工作室同构：一个画板 = 一个主题的一组图；编辑不覆盖原图，`parent_id` 记着「从哪张改来的」；「当前图」是对话的宾语 |
 | `cost_entries` | `category`(llm/search/image/model3d/material/shipping/fee…) · `amount` · `job_id` | 费用账本 → 项目 P&L |
 | `printers` / `materials` | 成型尺寸 · 功率 · 购入价 · 寿命小时 · 实测每小时出料克数 / 类型 · 颜色 · 元每公斤 · 库存克数 | 成本模型与产能估算的基础数据 |
 | `print_runs` | `est_minutes/grams` · `actual_minutes/grams` · `result` · `fail_reason` · `order_item_id?` | 打样与生产共用；失败率反哺成本，实际值反哺估算 |

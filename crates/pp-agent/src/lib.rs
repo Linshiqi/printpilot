@@ -5,11 +5,13 @@
 
 pub mod cad;
 pub mod chat;
+pub mod image;
 mod json;
 pub mod research;
 
 pub use cad::{design_spec, edit_model, generate_model, review_model, CadBuild, CadConfig, CadExecutor, CadProgress};
 pub use chat::{chat_turn, describe_images, split_answer, ChatLine, ChatOutcome, ChatTurn};
+pub use image::{plan_image_turn, ImageAction, ImagePlan, ImagePlanConfig, ImageTurn};
 pub use json::{ask_json, extract_json};
 pub use research::{run_research, ResearchConfig, ResearchProgress};
 

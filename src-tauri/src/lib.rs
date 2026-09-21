@@ -115,6 +115,23 @@ pub fn run() {
             command::design::design_set_param,
             command::design::design_run_code,
             command::design::design_review,
+            command::imagery::image_provider_info,
+            command::imagery::image_settings_get,
+            command::imagery::image_settings_set,
+            command::imagery::board_list,
+            command::imagery::board_create,
+            command::imagery::board_get,
+            command::imagery::board_rename,
+            command::imagery::board_delete,
+            command::imagery::board_set_options,
+            command::imagery::board_link_project,
+            command::imagery::board_select,
+            command::imagery::board_adopt,
+            command::imagery::board_remove_image,
+            command::imagery::board_add_image,
+            command::imagery::board_send,
+            command::imagery::board_to_design,
+            command::imagery::board_export,
         ])
         .run(tauri::generate_context!())
         .expect("error while running PrintPilot");

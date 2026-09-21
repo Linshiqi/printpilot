@@ -17,6 +17,14 @@ pub struct AppConfig {
     pub library_dir: Option<String>,
     /// 演示模式:所有供应商适配器返回内置样例,不花钱
     pub demo_mode: bool,
+    /// 出图优先用哪家:""(自动:生成用便宜的、编辑用能编辑的)/ minimax / qwen
+    #[serde(default)]
+    pub image_provider: String,
+    /// 出图接口的接入地址;None = 出厂默认。百炼给的地址带工作空间,所以必须可改
+    #[serde(default)]
+    pub minimax_base_url: Option<String>,
+    #[serde(default)]
+    pub qwen_base_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,11 +71,21 @@ pub fn load(config_dir: &Path) -> (AppConfig, LoadState) {
     field("library_dir", library_dir.is_some());
     let demo_mode = value.get("demo_mode").and_then(|v| v.as_bool());
     field("demo_mode", demo_mode.is_some());
+    let text_field = |name: &str| value.get(name).and_then(|v| v.as_str()).map(str::to_string);
+    let image_provider = text_field("image_provider");
+    field("image_provider", image_provider.is_some());
+    let minimax_base_url = text_field("minimax_base_url");
+    field("minimax_base_url", minimax_base_url.is_some());
+    let qwen_base_url = text_field("qwen_base_url");
+    field("qwen_base_url", qwen_base_url.is_some());
 
     (
         AppConfig {
             library_dir: library_dir.filter(|s| !s.trim().is_empty()),
             demo_mode: demo_mode.unwrap_or(false),
+            image_provider: image_provider.unwrap_or_default(),
+            minimax_base_url: minimax_base_url.filter(|s| !s.trim().is_empty()),
+            qwen_base_url: qwen_base_url.filter(|s| !s.trim().is_empty()),
         },
         state,
     )
@@ -129,6 +147,9 @@ mod tests {
         let cfg = AppConfig {
             library_dir: Some("D:\\打印资料库".into()),
             demo_mode: true,
+            image_provider: "qwen".into(),
+            minimax_base_url: None,
+            qwen_base_url: Some("https://ws-1.cn-beijing.maas.aliyuncs.com".into()),
         };
         save(&t.0, &cfg, LoadState::Missing).unwrap();
         assert_eq!(load(&t.0), (cfg, LoadState::Ok));

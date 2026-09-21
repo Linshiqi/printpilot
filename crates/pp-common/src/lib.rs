@@ -6,6 +6,7 @@ pub mod asset;
 pub mod cad;
 pub mod design;
 pub mod errcode;
+pub mod imagery;
 pub mod mesh;
 pub mod project;
 pub mod provider;

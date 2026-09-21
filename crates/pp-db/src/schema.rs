@@ -9,7 +9,7 @@
 use rusqlite::Connection;
 
 /// 每加一段迁移就 +1。**已发布版本的迁移段不可修改**,只能追加。
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 4;
 
 pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     let ver: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
@@ -26,6 +26,9 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     }
     if ver < 3 {
         conn.execute_batch(V3)?;
+    }
+    if ver < 4 {
+        conn.execute_batch(V4)?;
     }
     if ver != SCHEMA_VERSION {
         conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
@@ -309,6 +312,52 @@ ALTER TABLE cad_versions ADD COLUMN design_id TEXT REFERENCES cad_designs(id);
 CREATE INDEX IF NOT EXISTS idx_cad_versions_design ON cad_versions(design_id, created_at);
 "#;
 
+/// v4:图片工作台。**画板** = 一个主题的一组图(参考图、对话、生成过的每一张图);
+/// 和建模工作室同构:`image_boards` ↔ `cad_designs`,`image_versions` ↔ `cad_versions`,`image_messages` ↔ `cad_messages`。
+const V4: &str = r#"
+CREATE TABLE IF NOT EXISTS image_boards (
+    id                 TEXT PRIMARY KEY,
+    project_id         TEXT REFERENCES projects(id),
+    name               TEXT NOT NULL,
+    purpose            TEXT NOT NULL DEFAULT 'model_ref',
+    aspect             TEXT NOT NULL DEFAULT 'square',
+    ref_asset_ids_json TEXT NOT NULL DEFAULT '[]',
+    current_image_id   TEXT,
+    created_at         INTEGER NOT NULL,
+    updated_at         INTEGER NOT NULL,
+    deleted_at         INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_image_boards_updated ON image_boards(updated_at);
+
+CREATE TABLE IF NOT EXISTS image_versions (
+    id         TEXT PRIMARY KEY,
+    board_id   TEXT NOT NULL REFERENCES image_boards(id),
+    parent_id  TEXT REFERENCES image_versions(id),
+    asset_id   TEXT NOT NULL REFERENCES assets(id),
+    prompt     TEXT NOT NULL DEFAULT '',
+    mode       TEXT NOT NULL DEFAULT 'generate',
+    provider   TEXT NOT NULL DEFAULT '',
+    model      TEXT NOT NULL DEFAULT '',
+    aspect     TEXT NOT NULL DEFAULT 'square',
+    adopted    INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    deleted_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_image_versions_board ON image_versions(board_id, created_at);
+
+CREATE TABLE IF NOT EXISTS image_messages (
+    id                   TEXT PRIMARY KEY,
+    board_id             TEXT NOT NULL REFERENCES image_boards(id),
+    from_user            INTEGER NOT NULL,
+    kind                 TEXT NOT NULL,
+    content              TEXT NOT NULL DEFAULT '',
+    extra_json           TEXT NOT NULL DEFAULT '{}',
+    image_asset_ids_json TEXT NOT NULL DEFAULT '[]',
+    created_at           INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_image_messages_board ON image_messages(board_id, created_at);
+"#;
+
 /// 一次性数据回填是否做过(velo 做法)。
 pub fn migration_done(conn: &Connection, name: &str) -> rusqlite::Result<bool> {
     let n: i64 = conn.query_row(
@@ -346,7 +395,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(tables, 17);
+        assert_eq!(tables, 20);
     }
 
     #[test]

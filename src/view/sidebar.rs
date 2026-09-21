@@ -49,6 +49,7 @@ pub fn Sidebar(state: AppState) -> impl IntoView {
             <div class="flex-1 overflow-y-auto px-2 py-2 space-y-0.5">
                 <NavItem state=state route=Route::Dashboard icon=IconKind::Dashboard label=move || t_string!(i18n, nav.dashboard)/>
                 <NavItem state=state route=Route::Projects icon=IconKind::Kanban label=move || t_string!(i18n, nav.projects)/>
+                <NavItem state=state route=Route::Images icon=IconKind::Image label=move || t_string!(i18n, nav.images)/>
                 <NavItem state=state route=Route::Studio icon=IconKind::Box label=move || t_string!(i18n, nav.studio)/>
                 <NavItem state=state route=Route::Ideas icon=IconKind::Lightbulb label=move || t_string!(i18n, nav.ideas)/>
                 <NavItem state=state route=Route::Calendar icon=IconKind::Calendar label=move || t_string!(i18n, nav.calendar)/>

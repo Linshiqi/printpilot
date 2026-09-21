@@ -1,6 +1,7 @@
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_i18n::{t_string, td_string};
+use pp_common::imagery::ImageSettings;
 use pp_common::provider::ProviderId;
 use pp_common::AppInfo;
 
@@ -10,7 +11,7 @@ use crate::icon::IconKind;
 use crate::ipc::{self, cmd};
 use crate::state::AppState;
 use crate::theme::Theme;
-use crate::ui::{Badge, Button, ButtonVariant, Card, SectionTitle, Segmented, TextInput, Toggle, Tone};
+use crate::ui::{Badge, Button, ButtonVariant, Card, Field, SectionTitle, Segmented, TextInput, Toggle, Tone};
 
 #[component]
 fn Row(#[prop(into)] label: Signal<String>, children: Children) -> impl IntoView {
@@ -116,6 +117,91 @@ fn KeyRow(state: AppState, id: ProviderId, #[prop(into)] title: Signal<String>, 
     }
 }
 
+/// 出图设置:生成时优先用哪家、两家的接入地址(百炼给的地址可能带工作空间,所以必须能改)。
+/// 密钥不在这里——密钥在上面的「接口密钥」里。
+#[component]
+fn ImageSettingsCard(state: AppState) -> impl IntoView {
+    let i18n = use_i18n();
+    let provider = RwSignal::new("auto");
+    let minimax_url = RwSignal::new(String::new());
+    let qwen_url = RwSignal::new(String::new());
+    let busy = RwSignal::new(false);
+    let label = move |f: fn(Locale) -> &'static str| Signal::derive(move || f(i18n.get_locale()).to_string());
+
+    let apply = move |s: ImageSettings| {
+        provider.set(match s.provider.as_str() {
+            "minimax" => "minimax",
+            "qwen" => "qwen",
+            _ => "auto",
+        });
+        minimax_url.set(s.minimax_base_url);
+        qwen_url.set(s.qwen_base_url);
+    };
+    spawn_local(async move {
+        match ipc::call_no_args::<ImageSettings>(cmd::IMAGE_SETTINGS_GET).await {
+            Ok(s) => apply(s),
+            Err(e) => state.notify_error(e),
+        }
+    });
+    let save = move || {
+        if busy.get_untracked() {
+            return;
+        }
+        let settings = ImageSettings {
+            provider: provider.get_untracked().to_string(),
+            minimax_base_url: minimax_url.get_untracked(),
+            qwen_base_url: qwen_url.get_untracked(),
+        };
+        busy.set(true);
+        spawn_local(async move {
+            match ipc::call_unit(cmd::IMAGE_SETTINGS_SET, &serde_json::json!({ "settings": settings })).await {
+                Ok(()) => {
+                    // 后端会规整地址(去掉末尾的 /,空 = 出厂默认),读回来显示真正生效的值
+                    if let Ok(s) = ipc::call_no_args::<ImageSettings>(cmd::IMAGE_SETTINGS_GET).await {
+                        apply(s);
+                    }
+                    state.notify_info(td_string!(current_locale(), settings.image_saved));
+                }
+                Err(e) => state.notify_error(e),
+            }
+            busy.set(false);
+        });
+    };
+
+    view! {
+        <Card class="p-5">
+            <SectionTitle title=move || t_string!(i18n, settings.image) hint=move || t_string!(i18n, settings.image_hint)/>
+            <div class="divide-y divide-gray-100 dark:divide-gray-700 pt-1">
+                <Row label=label(|l| td_string!(l, settings.image_provider))>
+                    <Segmented
+                        value=Signal::derive(move || provider.get())
+                        options=vec![
+                            ("auto", label(|l| td_string!(l, settings.image_provider_auto))),
+                            ("minimax", label(|l| td_string!(l, settings.image_provider_minimax))),
+                            ("qwen", label(|l| td_string!(l, settings.image_provider_qwen))),
+                        ]
+                        on_change=move |p: &'static str| {
+                            provider.set(p);
+                            save();
+                        }
+                    />
+                </Row>
+                <div class="py-3 space-y-3">
+                    <Field label=move || t_string!(i18n, settings.image_minimax_url) hint=move || t_string!(i18n, settings.image_minimax_url_hint)>
+                        <TextInput value=minimax_url on_enter=save/>
+                    </Field>
+                    <Field label=move || t_string!(i18n, settings.image_qwen_url) hint=move || t_string!(i18n, settings.image_qwen_url_hint)>
+                        <TextInput value=qwen_url on_enter=save/>
+                    </Field>
+                    <div class="flex justify-end">
+                        <Button small=true disabled=Signal::derive(move || busy.get()) on_click=save>{move || t_string!(i18n, common.save)}</Button>
+                    </div>
+                </div>
+            </div>
+        </Card>
+    }
+}
+
 #[component]
 pub fn SettingsView(state: AppState) -> impl IntoView {
     let i18n = use_i18n();
@@ -186,8 +272,22 @@ pub fn SettingsView(state: AppState) -> impl IntoView {
                                 title=label(|l| leptos_i18n::td_string!(l, settings.key_zhipu_search))
                                 hint=label(|l| leptos_i18n::td_string!(l, settings.key_zhipu_search_hint))
                             />
+                            <KeyRow
+                                state=state
+                                id=ProviderId::Minimax
+                                title=label(|l| leptos_i18n::td_string!(l, settings.key_minimax))
+                                hint=label(|l| leptos_i18n::td_string!(l, settings.key_minimax_hint))
+                            />
+                            <KeyRow
+                                state=state
+                                id=ProviderId::QwenImage
+                                title=label(|l| leptos_i18n::td_string!(l, settings.key_qwen_image))
+                                hint=label(|l| leptos_i18n::td_string!(l, settings.key_qwen_image_hint))
+                            />
                         </div>
                     </Card>
+
+                    <ImageSettingsCard state=state/>
 
                     <Card class="p-5">
                         <SectionTitle title=move || t_string!(i18n, settings.appearance)/>

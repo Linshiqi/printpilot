@@ -13,6 +13,8 @@ use crate::theme::Theme;
 pub enum Route {
     Dashboard,
     Projects,
+    /// 图片工作台(接图片模型出图,对话式改图)
+    Images,
     /// 建模工作室(看图 → 代码建模,对话式修改)
     Studio,
     Ideas,
@@ -28,6 +30,7 @@ impl Route {
         match self {
             Route::Dashboard => "dashboard",
             Route::Projects => "projects",
+            Route::Images => "images",
             Route::Studio => "studio",
             Route::Ideas => "ideas",
             Route::Calendar => "calendar",
@@ -42,6 +45,7 @@ impl Route {
         [
             Route::Dashboard,
             Route::Projects,
+            Route::Images,
             Route::Studio,
             Route::Ideas,
             Route::Calendar,
@@ -77,6 +81,8 @@ pub struct AppState {
     pub cad_progress: RwSignal<Option<(String, u32, u32)>>,
     /// 引擎包解包进度:`(phase, done, total)`,由 cad-engine-progress 事件驱动
     pub cad_engine_progress: RwSignal<Option<(String, u64, u64)>>,
+    /// 正在出图的那一轮走到了哪一步:`(phase, provider, count)`,由 image-progress 事件驱动
+    pub image_progress: RwSignal<Option<(String, String, u32)>>,
 }
 
 impl AppState {
@@ -99,6 +105,7 @@ impl AppState {
             research_progress: RwSignal::new(None),
             cad_progress: RwSignal::new(None),
             cad_engine_progress: RwSignal::new(None),
+            image_progress: RwSignal::new(None),
         }
     }
 
@@ -141,6 +148,7 @@ mod tests {
         for r in [
             Route::Dashboard,
             Route::Projects,
+            Route::Images,
             Route::Studio,
             Route::Ideas,
             Route::Calendar,

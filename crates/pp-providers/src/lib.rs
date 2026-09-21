@@ -8,6 +8,7 @@
 
 pub mod error;
 pub mod http;
+pub mod image;
 pub mod llm;
 pub mod search;
 
