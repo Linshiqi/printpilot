@@ -29,6 +29,11 @@ pub const CAD_SCRIPT_ERROR: &str = "cad_script_error";
 pub const IMAGE_UNREADABLE: &str = "image_unreadable";
 /// 用户自己点了「停止」:不是故障,界面不该当错误报
 pub const CANCELLED: &str = "cancelled";
+/// 合规检查没过,又没写跳过的原因:不能出发布包
+pub const LINT_BLOCKED: &str = "lint_blocked";
+/// 在线升级:查不到更新清单(断网、地址没配好)/ 下载或安装失败(含验签不过)
+pub const UPDATE_CHECK_FAILED: &str = "update_check_failed";
+pub const UPDATE_INSTALL_FAILED: &str = "update_install_failed";
 
 /// 拼出 `#code#detail`。
 pub fn err(code: &str, detail: impl std::fmt::Display) -> String {

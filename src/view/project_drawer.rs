@@ -146,6 +146,7 @@ fn ProjectDetail(state: AppState, project_id: String) -> impl IntoView {
     let start_board = move || with_project(&|p| ctl.start_board(p));
     let start_design = move || with_project(&|p| ctl.start_design(p, adopted_image()));
     let start_pricing = move || with_project(&|p| ctl.start_pricing(p));
+    let start_publish = move || with_project(&|p| ctl.start_publish(p));
 
     view! {
         <div class="flex items-center gap-2 flex-wrap">
@@ -258,6 +259,9 @@ fn ProjectDetail(state: AppState, project_id: String) -> impl IntoView {
                         }.into_any(),
                         Stage::Prototype => view! {
                             <Button small=true variant=variant icon=IconKind::Ruler on_click=start_pricing>{move || t_string!(i18n, project.do_pricing)}</Button>
+                        }.into_any(),
+                        Stage::Listing => view! {
+                            <Button small=true variant=variant icon=IconKind::Upload on_click=start_publish>{move || t_string!(i18n, project.do_publish)}</Button>
                         }.into_any(),
                         _ => ().into_any(),
                     }

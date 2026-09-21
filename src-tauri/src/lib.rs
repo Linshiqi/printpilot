@@ -5,6 +5,7 @@ mod config_manager;
 mod credentials;
 mod ctx;
 mod engine_pack;
+mod share;
 mod turns;
 
 use std::sync::Arc;
@@ -52,6 +53,8 @@ pub fn run() {
         })
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        // 在线升级:清单地址和验签公钥在 tauri.conf.json 的 plugins.updater 里(docs/adr/0010-online-update.md)
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(
             tauri_plugin_log::Builder::new()
                 .targets([
@@ -74,6 +77,8 @@ pub fn run() {
             command::system::set_demo_mode,
             command::system::cancel_turn,
             command::system::read_clipboard_text,
+            command::update::update_check,
+            command::update::update_install,
             command::project::list_projects,
             command::project::create_project,
             command::project::get_project,
@@ -151,6 +156,20 @@ pub fn run() {
             command::pricing::pricing_summary,
             command::pricing::print_run_add,
             command::pricing::print_run_delete,
+            command::publish::publish_overview,
+            command::publish::publish_note_save,
+            command::publish::publish_note_delete,
+            command::publish::publish_listing_save,
+            command::publish::publish_voice_set,
+            command::publish::publish_draft_notes,
+            command::publish::publish_draft_listing,
+            command::publish::publish_import_photo,
+            command::publish::publish_pack_build,
+            command::publish::publish_pack_open_folder,
+            command::publish::publish_open_site,
+            command::publish::publish_share_start,
+            command::publish::publish_share_stop,
+            command::publish::publish_mark_published,
         ])
         .run(tauri::generate_context!())
         .expect("error while running PrintPilot");

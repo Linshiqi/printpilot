@@ -260,6 +260,11 @@ impl ProjectController {
         self.close_and_go(Handoff::Pricing { project_id: p.id.clone() }, Route::Pricing);
     }
 
+    /// 去「上架」:打开这个项目的草稿和发布包。
+    pub fn start_publish(self, p: &Project) {
+        self.close_and_go(Handoff::Publish { project_id: p.id.clone() }, Route::Publish);
+    }
+
     pub fn open_design(self, design_id: String) {
         self.close_and_go(
             Handoff::Design {

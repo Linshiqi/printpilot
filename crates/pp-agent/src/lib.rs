@@ -7,6 +7,7 @@ pub mod cad;
 pub mod chat;
 pub mod image;
 mod json;
+pub mod publish;
 pub mod research;
 
 pub use cad::{design_spec, edit_model, generate_model, review_model, CadBuild, CadConfig, CadExecutor, CadProgress};

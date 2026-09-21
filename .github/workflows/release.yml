@@ -8,6 +8,10 @@
 # 发布是原子的:先建草稿 → 三个平台各自上传 → **全部成功**才转为正式发布。任何一个平台失败,用户看不到半成品。
 # 手动触发(workflow_dispatch)只构建、不发布——用来验证 macOS 能不能编过,产物在这次运行的 Artifacts 里(保留 3 天)。
 #
+# 在线升级(docs/adr/0010-online-update.md):配了仓库密钥 TAURI_SIGNING_PRIVATE_KEY(和 …_PASSWORD)之后,每个平台
+# 会**额外**出一个不带引擎的精简升级包 + 签名,publish 一步拼出 latest.json;引擎包单独发到 `engine-<版本>` 这个 Release 里
+# (同一个引擎版本只传一次)。没配密钥时这些步骤全部跳过,发版和以前完全一样。这些附加步骤失败不拦发版(continue-on-error)。
+#
 # 还没做的(需要负责人提供证书,做了之后在这里加环境变量即可,Tauri 会自动用):
 #   - Windows 代码签名(没签名时 SmartScreen 会提示「未知发布者」)
 #   - macOS Developer ID 签名 + 公证(现在是 ad-hoc 签名,首次打开要右键 →「打开」)
@@ -116,9 +120,13 @@ jobs:
           python -m pip install --disable-pip-version-check zstandard
           python scripts/build-engine-pack.py --platform ${{ matrix.platform }}
 
-      - name: Engine pack manifest
+      # 清单里写上这个引擎包可以从哪下载:精简升级包不带引擎,应用要用的时候按这些地址去下
+      - name: Engine pack manifest (with download addresses)
         shell: bash
-        run: cat src-tauri/resources/cad-engine/cad-engine.json
+        run: |
+          PY=$(command -v python3 || command -v python)
+          "$PY" scripts/release-tools.py engine-urls src-tauri/resources/cad-engine/cad-engine.json ${{ matrix.platform }} || true
+          cat src-tauri/resources/cad-engine/cad-engine.json
 
       # ---- 2. 应用 ----
       - uses: dtolnay/rust-toolchain@stable
@@ -168,6 +176,76 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "$GITHUB_REF_NAME" "${{ steps.collect.outputs.file }}" --clobber
 
+      # ---- 3. 在线升级(附加;没配签名私钥就整段跳过;失败不拦发版)----
+      - name: Is the update signing key configured?
+        id: signing
+        shell: bash
+        env:
+          KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [ -n "$KEY" ]; then echo "enabled=true" >> "$GITHUB_OUTPUT"; else echo "enabled=false" >> "$GITHUB_OUTPUT"; fi
+
+      # 引擎包单独发到 engine-<版本> 这个 Release:同一个引擎版本只传一次,应用的每次发版不再重复带它
+      - name: Publish the engine pack (once per engine version)
+        if: steps.signing.outputs.enabled == 'true' && startsWith(github.ref, 'refs/tags/v')
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PY=$(command -v python3 || command -v python)
+          engine=$("$PY" -c "import json; print(json.load(open('src-tauri/resources/cad-engine/cad-engine.json'))['engine_version'])")
+          tag="engine-$engine"
+          asset="cad-engine_${{ matrix.platform }}.tar.zst"
+          gh release view "$tag" >/dev/null 2>&1 || gh release create "$tag" --latest=false --title "Modeling engine $engine" \
+            --notes "The CAD engine pack (Python + build123d + OpenCascade). Downloaded by the app on demand; not meant to be installed by hand." || true
+          if gh release view "$tag" --json assets --jq '.assets[].name' | grep -qx "$asset"; then
+            echo "$asset is already published"
+          else
+            cp src-tauri/resources/cad-engine/cad-engine.tar.zst "$asset"
+            gh release upload "$tag" "$asset" --clobber
+          fi
+
+      # 精简升级包:把引擎包暂时挪开再打一次包(Rust 已经编过了,这一步只是重新打包),并让 Tauri 给它签名
+      - name: Build the slim update artifact
+        id: slim
+        if: steps.signing.outputs.enabled == 'true'
+        continue-on-error: true
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          PY=$(command -v python3 || command -v python)
+          version=$("$PY" -c "import json; print(json.load(open('src-tauri/tauri.conf.json'))['version'])")
+          mv src-tauri/resources/cad-engine/cad-engine.tar.zst "$RUNNER_TEMP/cad-engine.tar.zst"
+          trap 'mv "$RUNNER_TEMP/cad-engine.tar.zst" src-tauri/resources/cad-engine/cad-engine.tar.zst' EXIT
+          case "${{ matrix.bundles }}" in
+            nsis) bundles=nsis ;;
+            dmg)  bundles=app ;;
+          esac
+          cargo tauri build --target ${{ matrix.target }} --bundles $bundles --ci --config '{"bundle":{"createUpdaterArtifacts":true}}'
+          mkdir -p update-assets
+          case "${{ matrix.bundles }}" in
+            nsis)
+              found=$(ls target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe | head -n 1)
+              out="PrintPilot_${version}_windows_x64-update.exe" ;;
+            dmg)
+              found=$(ls target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz | head -n 1)
+              out="PrintPilot_${version}_${{ matrix.asset }}"; out="${out%.dmg}.app.tar.gz" ;;
+          esac
+          cp "$found" "update-assets/$out"
+          cp "$found.sig" "update-assets/$out.sig"
+          ls -la update-assets
+
+      - name: Upload the update artifact
+        if: steps.slim.outcome == 'success' && startsWith(github.ref, 'refs/tags/v')
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" update-assets/* --clobber
+
       - name: Keep as a workflow artifact (manual runs)
         if: "!startsWith(github.ref, 'refs/tags/v')"
         uses: actions/upload-artifact@v4
@@ -183,6 +261,25 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
+      # 更新清单:有哪个平台的签名就写哪个平台。下载地址默认指向这个 Release;
+      # 要从别处分发(仓库是私有的,Release 附件匿名下载不了)就设仓库变量 UPDATE_DOWNLOAD_BASE,并把文件同步过去
+      - name: latest.json for the in-app updater
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          DOWNLOAD_BASE: ${{ vars.UPDATE_DOWNLOAD_BASE }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          mkdir -p sigs
+          gh release download "$GITHUB_REF_NAME" --pattern '*.sig' --dir sigs || true
+          base="${DOWNLOAD_BASE:-https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME}"
+          if python3 scripts/release-tools.py latest-json "$version" "docs/releases/$GITHUB_REF_NAME.md" "$base" sigs latest.json; then
+            gh release upload "$GITHUB_REF_NAME" latest.json --clobber
+          fi
+
       - name: Checksums, then flip the draft to published
         env:
           GH_TOKEN: ${{ github.token }}

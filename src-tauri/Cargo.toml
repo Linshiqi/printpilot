@@ -1,6 +1,6 @@
 [package]
 name = "printpilot"
-version = "0.9.5"
+version = "0.9.6"
 description = "PrintPilot — 3D 打印爆品工作台"
 edition = "2021"
 
@@ -38,6 +38,8 @@ tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-log = "2"
 tauri-plugin-single-instance = "2"
+# 在线升级(docs/adr/0010-online-update.md):下载、按公钥验签、安装
+tauri-plugin-updater = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 log = "0.4"
@@ -45,6 +47,8 @@ log = "0.4"
 keyring = { version = "3", features = ["windows-native", "apple-native"] }
 # 系统剪贴板:右键菜单的「粘贴」(WebView 自己读剪贴板要弹权限框)和「复制图片」(位图,能直接贴进微信 / 小红书网页版)
 arboard = "3"
+# 发布包的手机页:把局域网地址画成二维码(只要 SVG 输出,不带它自己的 image 依赖)
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 # 取消一轮对话(select + watch)。运行时本身由 tauri 托管,这里只是用它的同步原语
 tokio = { version = "1", features = ["sync", "time", "macros"] }
 

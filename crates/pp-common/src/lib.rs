@@ -12,6 +12,7 @@ pub mod imagery;
 pub mod mesh;
 pub mod project;
 pub mod provider;
+pub mod publish;
 pub mod research;
 pub mod stage;
 

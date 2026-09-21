@@ -358,6 +358,12 @@ pub struct CadEngineInfo {
     /// 引擎包解开后占多少字节(给用户一个预期)
     #[serde(default)]
     pub unpacked_bytes: u64,
+    /// 需要的引擎不在安装目录里(在线升级装的是不带引擎的精简包,而这一版换了引擎):要联网下载。
+    /// 几百 MB,界面要先问一句,不自动下
+    #[serde(default)]
+    pub needs_download: bool,
+    #[serde(default)]
+    pub download_bytes: u64,
 }
 
 /// 模型的一个版本。每次生成、改参数、指令修补都产生一个新版本(父子关系 = 版本树)。

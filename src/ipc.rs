@@ -14,6 +14,8 @@ pub mod cmd {
     pub const SET_DEMO_MODE: &str = "set_demo_mode";
     pub const CANCEL_TURN: &str = "cancel_turn";
     pub const READ_CLIPBOARD_TEXT: &str = "read_clipboard_text";
+    pub const UPDATE_CHECK: &str = "update_check";
+    pub const UPDATE_INSTALL: &str = "update_install";
 
     pub const LIST_PROJECTS: &str = "list_projects";
     pub const CREATE_PROJECT: &str = "create_project";
@@ -31,6 +33,21 @@ pub mod cmd {
     pub const DELETE_ASSET: &str = "delete_asset";
     pub const OPEN_ASSET_EXTERNAL: &str = "open_asset_external";
     pub const COPY_ASSET_IMAGE: &str = "copy_asset_image";
+    // 上架与发布(M5)
+    pub const PUBLISH_OVERVIEW: &str = "publish_overview";
+    pub const PUBLISH_NOTE_SAVE: &str = "publish_note_save";
+    pub const PUBLISH_NOTE_DELETE: &str = "publish_note_delete";
+    pub const PUBLISH_LISTING_SAVE: &str = "publish_listing_save";
+    pub const PUBLISH_VOICE_SET: &str = "publish_voice_set";
+    pub const PUBLISH_DRAFT_NOTES: &str = "publish_draft_notes";
+    pub const PUBLISH_DRAFT_LISTING: &str = "publish_draft_listing";
+    pub const PUBLISH_IMPORT_PHOTO: &str = "publish_import_photo";
+    pub const PUBLISH_PACK_BUILD: &str = "publish_pack_build";
+    pub const PUBLISH_PACK_OPEN_FOLDER: &str = "publish_pack_open_folder";
+    pub const PUBLISH_OPEN_SITE: &str = "publish_open_site";
+    pub const PUBLISH_SHARE_START: &str = "publish_share_start";
+    pub const PUBLISH_SHARE_STOP: &str = "publish_share_stop";
+    pub const PUBLISH_MARK_PUBLISHED: &str = "publish_mark_published";
 
     pub const LAB_GENERATE_SAMPLE: &str = "lab_generate_sample";
     pub const IMPORT_MODEL: &str = "import_model";
@@ -114,6 +131,7 @@ pub mod event {
     pub const CAD_PROGRESS: &str = "cad-progress";
     pub const CAD_STREAM: &str = "cad-stream";
     pub const CAD_ENGINE_PROGRESS: &str = "cad-engine-progress";
+    pub const UPDATE_PROGRESS: &str = "update-progress";
     pub const IMAGE_PROGRESS: &str = "image-progress";
 }
 

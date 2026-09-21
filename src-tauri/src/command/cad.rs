@@ -509,6 +509,47 @@ fn pack_to_install(app: &AppHandle, ctx: &AppCtx) -> Option<(PathBuf, engine_pac
     (installed.as_deref() != Some(manifest.engine_version.as_str())).then_some((archive, manifest))
 }
 
+/// 安装目录里只带了清单(精简升级包),而解开的引擎不是清单要的版本 → 要联网下载。
+fn pack_to_download(app: &AppHandle, ctx: &AppCtx) -> Option<engine_pack::PackManifest> {
+    if std::env::var_os(pp_cad::engine::ENV_OVERRIDE).is_some_and(|v| !v.is_empty()) {
+        return None;
+    }
+    let manifest = engine_pack::manifest_only(&app.path().resource_dir().ok()?)?;
+    let installed = engine_pack::installed_version(&ctx.data_root.join("cad-engine"));
+    (installed.as_deref() != Some(manifest.engine_version.as_str())).then_some(manifest)
+}
+
+/// 把引擎包下到数据目录(按清单里的地址挨个试),返回下好的文件。内容对不对由随后的 `install` 按 SHA-256 校验。
+fn download_pack(app: &AppHandle, ctx: &AppCtx, manifest: &engine_pack::PackManifest) -> Result<PathBuf, String> {
+    if manifest.download.is_empty() {
+        return Err(errcode::err(errcode::CAD_ENGINE_MISSING, "this build has no engine pack and no download address"));
+    }
+    let dest = ctx.data_root.join("cad-engine").join(".download").join(engine_pack::ARCHIVE_NAME);
+    let client = pp_providers::http::build_download_client(None).map_err(|e| errcode::err(errcode::CAD_ENGINE_FAILED, e))?;
+    let total_hint = manifest.bytes;
+    let emit = {
+        let app = app.clone();
+        move |done: u64, total: u64| {
+            let _ = app.emit(ENGINE_PROGRESS_EVENT, json!({ "phase": "downloading", "done": done, "total": if total > 0 { total } else { total_hint } }));
+        }
+    };
+    let mut last_error = String::new();
+    for url in &manifest.download {
+        log::info!("[cad] 下载引擎包 {} ← {url}", manifest.engine_version);
+        match tauri::async_runtime::block_on(pp_providers::http::download_to(&client, url, &dest, &emit)) {
+            Ok(bytes) => {
+                log::info!("[cad] 引擎包下载完成:{:.0} MB", bytes as f64 / 1e6);
+                return Ok(dest);
+            }
+            Err(e) => {
+                log::warn!("[cad] 从 {url} 下载失败:{e}");
+                last_error = e.to_string();
+            }
+        }
+    }
+    Err(errcode::err(errcode::CAD_ENGINE_FAILED, format!("engine pack download failed: {last_error}")))
+}
+
 #[tauri::command(rename_all = "snake_case")]
 pub async fn cad_engine_info(app: AppHandle, ctx: State<'_, Arc<AppCtx>>) -> Result<CadEngineInfo, String> {
     let ctx = ctx.inner().clone();
@@ -521,6 +562,17 @@ pub async fn cad_engine_info(app: AppHandle, ctx: State<'_, Arc<AppCtx>>) -> Res
                 needs_install: true,
                 unpacked_bytes: manifest.unpacked_bytes,
                 problem: "engine pack is not unpacked yet".into(),
+                ..Default::default()
+            };
+        }
+        if let Some(manifest) = pack_to_download(&app, &ctx) {
+            // 几百 MB:界面先问一句再下,不像解包那样自动开始
+            return CadEngineInfo {
+                needs_install: true,
+                needs_download: true,
+                download_bytes: manifest.bytes,
+                unpacked_bytes: manifest.unpacked_bytes,
+                problem: "the engine pack has to be downloaded".into(),
                 ..Default::default()
             };
         }
@@ -559,8 +611,13 @@ pub async fn cad_engine_install(app: AppHandle, ctx: State<'_, Arc<AppCtx>>) -> 
     tauri::async_runtime::spawn_blocking(move || {
         // 排队:后到的请求等前一个装完,再看一眼——这时已经是装好的了,直接返回
         let _one_at_a_time = ctx.engine_install.lock().unwrap_or_else(|e| e.into_inner());
-        let Some((archive, manifest)) = pack_to_install(&app, &ctx) else {
-            return Ok(()); // 已经是这个版本了(或者这个构建根本不带引擎包)
+        let (archive, manifest, downloaded) = match pack_to_install(&app, &ctx) {
+            Some((archive, manifest)) => (archive, manifest, false),
+            // 安装目录里没带包(精简升级包):按清单下载。下完和自带的包走同一条路——校验 SHA-256、解包、原子换名
+            None => match pack_to_download(&app, &ctx) {
+                Some(manifest) => (download_pack(&app, &ctx, &manifest)?, manifest, true),
+                None => return Ok(()), // 已经是这个版本了(或者这个构建根本不带引擎)
+            },
         };
         // 正在运行的解释器在 Windows 上删不掉:先让常驻进程退出,装完之前也不许后台再起新的
         let _no_worker = ctx.cad_pool.pause();
@@ -572,8 +629,12 @@ pub async fn cad_engine_install(app: AppHandle, ctx: State<'_, Arc<AppCtx>>) -> 
                 let _ = app.emit(ENGINE_PROGRESS_EVENT, p);
             }
         };
-        let files = engine_pack::install(&archive, &manifest, &root, &pp_db::new_id(), &emit)
-            .map_err(|e| errcode::err(errcode::CAD_ENGINE_FAILED, e))?;
+        let installed = engine_pack::install(&archive, &manifest, &root, &pp_db::new_id(), &emit);
+        if downloaded {
+            // 下载来的包装完(或者校验没过)就删:留着也没有人会再用它
+            let _ = std::fs::remove_dir_all(root.join(".download"));
+        }
+        let files = installed.map_err(|e| errcode::err(errcode::CAD_ENGINE_FAILED, e))?;
         log::info!(
             "[cad] 引擎包 {} 已解开:{files} 个文件 · {:.0} MB · {:.1}s",
             manifest.engine_version,

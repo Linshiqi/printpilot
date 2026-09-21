@@ -22,6 +22,8 @@ pub struct AppCtx {
     pub engine_install: Mutex<()>,
     /// 正在跑的「一轮」(建模对话 / 出图 / 调研),用来中途取消
     pub turns: Arc<crate::turns::Turns>,
+    /// 发布包的手机页(临时的局域网页面)。同一时间最多一个;换成 `None` 就停了
+    pub share: Mutex<Option<crate::share::ShareHandle>>,
     config_dir: PathBuf,
     config: Mutex<AppConfig>,
     config_state: LoadState,
@@ -48,6 +50,7 @@ impl AppCtx {
             ),
             engine_install: Mutex::new(()),
             turns: Arc::new(crate::turns::Turns::default()),
+            share: Mutex::new(None),
             config_dir,
             config: Mutex::new(config),
             config_state,

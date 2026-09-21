@@ -29,6 +29,9 @@ pub struct PackManifest {
     pub unpacked_bytes: u64,
     #[serde(default)]
     pub files: u64,
+    /// 这个包可以从哪下载(按顺序试)。发版流水线写进来的;本机自己构建的包没有这一项
+    #[serde(default)]
+    pub download: Vec<String>,
 }
 
 /// 已经解开的引擎里的 `python/engine.json`。
@@ -79,11 +82,23 @@ fn io(e: std::io::Error) -> PackError {
 }
 
 /// 安装包里带没带引擎包。开发构建里只有一个占位的 README,返回 `None`。
+/// 安装目录里只有清单、没有包:在线升级装的精简包就是这样(docs/adr/0010-online-update.md)。
+/// 清单说了需要哪个版本、包的 SHA-256 和去哪下载。
+pub fn manifest_only(resource_dir: &Path) -> Option<PackManifest> {
+    if bundled(resource_dir).is_some() {
+        return None;
+    }
+    serde_json::from_str(&std::fs::read_to_string(resource_dir.join("cad-engine").join(MANIFEST_NAME)).ok()?).ok()
+}
+
 pub fn bundled(resource_dir: &Path) -> Option<(PathBuf, PackManifest)> {
     let dir = resource_dir.join("cad-engine");
     let archive = dir.join(ARCHIVE_NAME);
     let manifest: PackManifest = serde_json::from_str(&std::fs::read_to_string(dir.join(MANIFEST_NAME)).ok()?).ok()?;
-    archive.is_file().then_some((archive, manifest))
+    // 大小要和清单对得上:精简升级包覆盖安装之后,目录里可能还留着**上一版**的引擎包,而清单已经是新的——
+    // 拿旧包去装只会在校验 SHA-256 时失败。对不上就当作没带(走按需下载)
+    let same_size = std::fs::metadata(&archive).is_ok_and(|m| m.is_file() && m.len() == manifest.bytes);
+    same_size.then_some((archive, manifest))
 }
 
 /// 已经解开的引擎是哪个版本;没装或读不出来返回 `None`。
@@ -282,6 +297,34 @@ pub fn install(
 }
 
 #[cfg(test)]
+mod bundled_tests {
+    use super::*;
+
+    #[test]
+    fn a_stale_or_missing_archive_means_the_pack_has_to_be_downloaded() {
+        let root = std::env::temp_dir().join(format!("pp-bundled-{}", std::process::id()));
+        let dir = root.join("cad-engine");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(bundled(&root).is_none() && manifest_only(&root).is_none(), "开发构建:什么都没带");
+
+        let manifest = r#"{"engine_version":"e-2","sha256":"00","bytes":5,"download":["https://example.com/e-2.tar.zst"]}"#;
+        std::fs::write(dir.join(MANIFEST_NAME), manifest).unwrap();
+        // 精简包:只有清单
+        assert!(bundled(&root).is_none());
+        let m = manifest_only(&root).expect("manifest only");
+        assert_eq!((m.engine_version.as_str(), m.download.len()), ("e-2", 1));
+        // 目录里留着上一版的包(大小对不上):不能拿它来装
+        std::fs::write(dir.join(ARCHIVE_NAME), b"old-pack-bytes").unwrap();
+        assert!(bundled(&root).is_none() && manifest_only(&root).is_some());
+        // 完整安装包:大小对得上
+        std::fs::write(dir.join(ARCHIVE_NAME), b"12345").unwrap();
+        assert!(bundled(&root).is_some() && manifest_only(&root).is_none());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::Mutex;
@@ -354,6 +397,7 @@ mod tests {
             bytes: 18,
             unpacked_bytes: 0,
             files: 0,
+            download: Vec::new(),
         };
         let root = dir.join("cad-engine");
         let seen = Mutex::new(Vec::new());

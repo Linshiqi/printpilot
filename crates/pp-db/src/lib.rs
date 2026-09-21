@@ -11,6 +11,7 @@ mod imagery;
 mod overview;
 mod pricing;
 mod projects;
+mod publish;
 mod research;
 pub mod schema;
 

@@ -46,7 +46,7 @@ pub fn BoardView(state: AppState) -> impl IntoView {
             None => item(td_string!(l, board.menu_last_stage), IconKind::ArrowRight, || {}).disabled_if(true),
         };
         let (open_id, label) = (p.id.clone(), format!("{} {}", p.code, p.title));
-        let (p1, p2, p3, p4) = (p.clone(), p.clone(), p.clone(), p);
+        let (p1, p2, p3, p4, p5) = (p.clone(), p.clone(), p.clone(), p.clone(), p);
         state.open_menu(
             &ev,
             vec![
@@ -57,6 +57,7 @@ pub fn BoardView(state: AppState) -> impl IntoView {
                 item(td_string!(l, project.do_images), IconKind::Image, move || ctl.start_board(&p2)),
                 item(td_string!(l, project.do_model), IconKind::Box, move || ctl.start_design(&p3, None)),
                 item(td_string!(l, project.do_pricing), IconKind::Ruler, move || ctl.start_pricing(&p4)),
+                item(td_string!(l, project.do_publish), IconKind::Upload, move || ctl.start_publish(&p5)),
                 separator(),
                 copy_entry(state, td_string!(l, menu.copy_name), label),
             ],

@@ -91,11 +91,23 @@ cargo tauri build --bundles nsis                  # 本机出 Windows 安装包(
 - `.github/workflows/release.yml`：推 `v*` 标签 → Windows x64、macOS Apple 芯片、macOS Intel 三个安装包 → GitHub Release。先建草稿，**三个平台全部成功**才转正式发布。每个平台现场构建引擎包（有缓存：只有打包脚本、版本锁、执行器变了才重建）。手动触发只构建不发布，用来验证 macOS 能不能编过。
 - 发一个新版本：改 `Cargo.toml`（根包）、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json` 三处版本号（单测守着三者一致）→ 写 `docs/releases/vX.Y.Z.md`（会成为 Release 说明）→ 提交 → `git tag vX.Y.Z && git push origin main vX.Y.Z`。标签和版本号对不上，流程第一步就会失败。
 - 仓库是**私有**的：Actions 分钟数 Windows 按 2 倍、macOS 按 10 倍计；Release 附件外部下载不了（要对外分发得另找地方放，或把仓库 / Release 公开）。
-- 还没做：Windows 代码签名、macOS Developer ID 签名与公证、自动更新——都需要负责人提供证书 / 密钥。
+- **在线升级**（`docs/adr/0010-online-update.md`）：配了仓库密钥 `TAURI_SIGNING_PRIVATE_KEY`（+ `…_PASSWORD`，和 velo 同一把）之后，每个平台**额外**出一个不带引擎的精简升级包（`…-update.exe` / `….app.tar.gz`）+ 签名，`publish` 拼出 `latest.json`；引擎包单独发到 `engine-<引擎版本>` 这个 Release（同一版本只传一次）。这些都是附加步骤：没配密钥就跳过，失败不拦发版。仓库是私有的，Release 附件匿名下载不了——要么把发布物同步到 `dl.zotrus.com/printpilot/` 并设仓库变量 `UPDATE_DOWNLOAD_BASE`，要么公开仓库。**改引擎包的构建方式时注意**：应用用 `ruzstd` 解码，zstd 窗口不能超过 2^26（100 MiB 上限）；换了引擎版本，用户会被要求单独下载一次引擎。
+- 还没做：Windows 代码签名、macOS Developer ID 签名与公证——需要负责人提供证书。
 
 ## 代码结构
 
 见 `docs/03-architecture.md` §4。依赖方向：`src-tauri → pp-core → (pp-db, pp-providers, pp-agent, pp-channels, pp-geometry, pp-cad)`；所有 crate 可依赖 `pp-common`；前端只依赖 `pp-common`（不开 `backend` feature）。
+
+## 上架与发布包（M5）
+
+设计见 `docs/adr/0009-publish-pack.md`。动这块之前要知道的：
+
+- **红线（ADR-0002）**：不碰任何平台。「在电脑上发布」只是用默认浏览器打开官方发布页；「用手机发布」只是一个只读的局域网页面。不要加任何「替用户点发布 / 定时发 / 模拟登录」的东西，哪怕是可选项。
+- 渠道规格、词表、检查规则在 `pp_common::publish`，是**前后端共用的纯函数**：界面实时用它，`publish_pack_build` 出包时再判一次——后端那次才算数。新增一条检查：加 `LintCode` + `locales/*.json` 的 `publish.l_*` + `view/publish/mod.rs::issue_text` 的分支（有单测守着每个 code 都有文案）。
+- 词表用词组不用单字（「最」会误伤「最近」）；加词时顺手想一下误伤，并写进 `a_clean_note_passes` 这类用例。
+- 发布包的文件夹名用 ID 的**尾段**：ID 是 UUIDv7，前缀是时间戳，取前几位会撞。
+- 手机页服务（`src-tauri/src/share.rs`）：随机端口、令牌在路径里、只认 GET、连接串行处理——所以等请求行的超时要短（浏览器会预开空闲连接）。自动化验证用 `lan: false`（只听回环，不触发系统防火墙的授权提示）。
+- 自动保存和定价页一样「停手 600 ms 落盘」，但要**和上次存的快照比，变了才存**：只是点开一篇笔记不该刷新它的修改时间（列表按修改时间排）。
 
 ## 右键菜单
 

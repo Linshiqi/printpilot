@@ -11,8 +11,10 @@ pub mod pricing;
 pub mod mesh;
 pub mod project;
 pub mod provider;
+pub mod publish;
 pub mod research;
 pub mod system;
+pub mod update;
 
 use pp_common::errcode;
 

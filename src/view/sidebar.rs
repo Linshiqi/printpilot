@@ -49,11 +49,12 @@ pub fn Sidebar(state: AppState) -> impl IntoView {
             <div class="flex-1 overflow-y-auto px-2 py-2 space-y-0.5">
                 <NavItem state=state route=Route::Dashboard icon=IconKind::Dashboard label=move || t_string!(i18n, nav.dashboard)/>
                 <NavItem state=state route=Route::Projects icon=IconKind::Kanban label=move || t_string!(i18n, nav.projects)/>
-                // 四个工作台,按一个单品走过的顺序排:调研 → 图片 → 建模 → 定价
+                // 五个工作台,按一个单品走过的顺序排:调研 → 图片 → 建模 → 定价 → 上架
                 <NavItem state=state route=Route::Ideas icon=IconKind::Lightbulb label=move || t_string!(i18n, nav.ideas)/>
                 <NavItem state=state route=Route::Images icon=IconKind::Image label=move || t_string!(i18n, nav.images)/>
                 <NavItem state=state route=Route::Studio icon=IconKind::Box label=move || t_string!(i18n, nav.studio)/>
                 <NavItem state=state route=Route::Pricing icon=IconKind::Ruler label=move || t_string!(i18n, nav.pricing)/>
+                <NavItem state=state route=Route::Publish icon=IconKind::Upload label=move || t_string!(i18n, nav.publish)/>
                 <NavItem state=state route=Route::Calendar icon=IconKind::Calendar label=move || t_string!(i18n, nav.calendar)/>
                 <NavItem state=state route=Route::Orders icon=IconKind::Package label=move || t_string!(i18n, nav.orders)/>
                 <NavItem state=state route=Route::Analytics icon=IconKind::Chart label=move || t_string!(i18n, nav.analytics)/>

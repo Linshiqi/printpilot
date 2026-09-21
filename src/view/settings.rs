@@ -202,6 +202,97 @@ fn ImageSettingsCard(state: AppState) -> impl IntoView {
     }
 }
 
+/// 软件更新:查、下、装。下载的是不带建模引擎的精简包(十几 MB),引擎不动。
+#[component]
+fn UpdateCard(state: AppState) -> impl IntoView {
+    let i18n = use_i18n();
+    let checking = RwSignal::new(false);
+    let installing = RwSignal::new(false);
+    // None = 还没查过;Some(true) = 查过了,已经是最新
+    let up_to_date = RwSignal::new(None::<bool>);
+
+    let check = move || {
+        if checking.get_untracked() {
+            return;
+        }
+        checking.set(true);
+        spawn_local(async move {
+            #[derive(serde::Deserialize)]
+            struct Found {
+                version: String,
+                #[serde(default)]
+                notes: String,
+            }
+            let result = ipc::call_no_args::<Option<Found>>(cmd::UPDATE_CHECK).await;
+            checking.set(false);
+            match result {
+                Ok(Some(found)) => {
+                    up_to_date.set(Some(false));
+                    state.update_available.set(Some((found.version, found.notes)));
+                }
+                Ok(None) => {
+                    up_to_date.set(Some(true));
+                    state.update_available.set(None);
+                }
+                Err(e) => state.notify_error(e),
+            }
+        });
+    };
+    let install = move || {
+        if installing.get_untracked() {
+            return;
+        }
+        installing.set(true);
+        state.update_progress.set(None);
+        spawn_local(async move {
+            // 成功的话应用会被安装程序关掉 / 自己重启,走不到下面
+            if let Err(e) = ipc::call_unit_no_args(cmd::UPDATE_INSTALL).await {
+                installing.set(false);
+                state.notify_error(e);
+            }
+        });
+    };
+    let percent = move || match state.update_progress.get() {
+        Some((done, total)) if total > 0 => done as f64 / total as f64 * 100.0,
+        _ => 0.0,
+    };
+
+    view! {
+        <Card class="p-5 space-y-3">
+            <SectionTitle title=move || t_string!(i18n, settings.update) hint=move || t_string!(i18n, settings.update_hint)/>
+            <div class="flex items-center gap-3">
+                <div class="flex-1 min-w-0 text-xs text-gray-600 dark:text-gray-300">
+                    {move || match (state.update_available.get(), up_to_date.get()) {
+                        (Some((version, _)), _) => t_string!(i18n, settings.update_found, version = version).to_string(),
+                        (None, Some(true)) => t_string!(i18n, settings.update_none).to_string(),
+                        _ => String::new(),
+                    }}
+                </div>
+                <Show
+                    when=move || state.update_available.with(Option::is_some)
+                    fallback=move || view! {
+                        <Button small=true variant=ButtonVariant::Secondary disabled=Signal::derive(move || checking.get()) on_click=check>
+                            {move || if checking.get() { t_string!(i18n, settings.update_checking) } else { t_string!(i18n, settings.update_check) }}
+                        </Button>
+                    }
+                >
+                    <Button small=true disabled=Signal::derive(move || installing.get()) on_click=install>
+                        {move || if installing.get() { t_string!(i18n, settings.update_installing) } else { t_string!(i18n, settings.update_install) }}
+                    </Button>
+                </Show>
+            </div>
+            <Show when=move || installing.get()>
+                <div class="h-1.5 rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden">
+                    <div class="h-full bg-brand transition-all" style:width=move || format!("{:.1}%", percent())></div>
+                </div>
+            </Show>
+            {move || state.update_available.get().map(|(_, notes)| notes).filter(|n| !n.trim().is_empty()).map(|notes| view! {
+                <pre class="max-h-48 overflow-y-auto whitespace-pre-wrap break-words text-[11px] leading-relaxed text-gray-500 dark:text-gray-400 selectable">{notes}</pre>
+            })}
+        </Card>
+    }
+}
+
 #[component]
 pub fn SettingsView(state: AppState) -> impl IntoView {
     let i18n = use_i18n();
@@ -328,6 +419,8 @@ pub fn SettingsView(state: AppState) -> impl IntoView {
                             />
                         </div>
                     </Card>
+
+                    <UpdateCard state=state/>
 
                     <Card class="p-5">
                         <SectionTitle title=move || t_string!(i18n, settings.about)/>

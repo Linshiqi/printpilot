@@ -76,6 +76,14 @@ impl Db {
             "SELECT project_id, (chosen_price IS NOT NULL AND chosen_price > 0), 0 FROM cost_models",
             &|f, priced, _| f.has_price = priced > 0,
         )?;
+        // 上架(M5):出过几个发布包、几个回填了链接
+        fill(
+            "SELECT project_id, COUNT(*), COALESCE(SUM(external_url IS NOT NULL), 0) FROM publish_packs WHERE deleted_at IS NULL GROUP BY project_id",
+            &|f, n, published| {
+                f.publish_packs = n;
+                f.published = published;
+            },
+        )?;
         Ok(out)
     }
 

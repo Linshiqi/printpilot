@@ -3,7 +3,7 @@
 //!
 //! 清单只回答一个问题:「离开这个阶段之前,该有的东西有了吗?」有了 → 提示可以进入下一阶段;
 //! 没有 → 照样可以推进,但要写一句原因(`stage_events.forced`)——复盘时这是很值钱的数据。
-//! 上架之后的阶段(发布、运营、复盘)的工具还没做出来,清单是空的,只能人工判断。
+//! 运营、复盘两个阶段的工具还没做出来,清单是空的,只能人工判断。
 
 use serde::{Deserialize, Serialize};
 
@@ -37,6 +37,12 @@ pub struct ProjectFacts {
     /// 成本模型里定了售价
     #[serde(default)]
     pub has_price: bool,
+    /// 出过的发布包(上架,M5)
+    #[serde(default)]
+    pub publish_packs: u32,
+    /// 回填了发布链接的笔记 / 商品
+    #[serde(default)]
+    pub published: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -54,6 +60,10 @@ pub enum GateKey {
     PrintRun,
     /// 在成本定价器里定了售价
     Price,
+    /// 出过一个发布包(处理好的图 + 过了检查的文案)
+    PublishPack,
+    /// 发出去了:回填了笔记 / 商品的链接
+    Published,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -72,7 +82,9 @@ pub fn stage_gate(stage: Stage, facts: &ProjectFacts) -> Vec<GateItem> {
         Stage::Model => vec![item(GateKey::Model, facts.models > 0)],
         // 打样:真的打成过一次,并且算过账、定了价(成本定价器,M4)
         Stage::Prototype => vec![item(GateKey::PrintRun, facts.print_successes > 0), item(GateKey::Price, facts.has_price)],
-        Stage::Listing | Stage::Operating | Stage::Review => Vec::new(),
+        // 上架:出过发布包,并且真的发出去了(回填了链接)
+        Stage::Listing => vec![item(GateKey::PublishPack, facts.publish_packs > 0), item(GateKey::Published, facts.published > 0)],
+        Stage::Operating | Stage::Review => Vec::new(),
     }
 }
 
@@ -186,8 +198,10 @@ mod tests {
             models: 9,
             print_successes: 9,
             has_price: true,
+            publish_packs: 9,
+            published: 9,
         };
-        for s in [Stage::Listing, Stage::Operating, Stage::Review] {
+        for s in [Stage::Operating, Stage::Review] {
             assert!(stage_gate(s, &f).is_empty());
             assert!(!gate_passed(s, &f), "{s:?}:空清单是「没法判断」,不是「完成了」");
         }
@@ -224,8 +238,16 @@ mod tests {
             ..Default::default()
         };
         assert!(!needs_reason(Stage::Model, Stage::Listing, &f), "打样的证据齐了,一次走两步也不拦");
-        assert!(!needs_reason(Stage::Listing, Stage::Operating, &f), "上架的工具还没做,顺着走不拦");
-        assert!(needs_reason(Stage::Prototype, Stage::Operating, &f), "整个跳过了上架(没法自动判断的阶段)");
+        // 上架(M5)从此有清单:出过发布包 + 回填了链接
+        assert!(needs_reason(Stage::Listing, Stage::Operating, &f), "还没发出去就想进运营");
+        let listed = ProjectFacts {
+            publish_packs: 1,
+            published: 1,
+            ..f
+        };
+        assert!(!needs_reason(Stage::Listing, Stage::Operating, &listed));
+        assert!(!needs_reason(Stage::Operating, Stage::Review, &listed), "运营的工具还没做,顺着走不拦");
+        assert!(needs_reason(Stage::Listing, Stage::Review, &listed), "整个跳过了运营(没法自动判断的阶段)");
     }
 
     #[test]

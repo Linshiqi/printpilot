@@ -22,6 +22,8 @@ pub enum Route {
     Studio,
     /// 打样与定价(成本模型、三档建议价、打样记录)
     Pricing,
+    /// 上架(笔记 / 商品草稿、合规检查、发布包)
+    Publish,
     Ideas,
     Calendar,
     Orders,
@@ -38,6 +40,7 @@ impl Route {
             Route::Images => "images",
             Route::Studio => "studio",
             Route::Pricing => "pricing",
+            Route::Publish => "publish",
             Route::Ideas => "ideas",
             Route::Calendar => "calendar",
             Route::Orders => "orders",
@@ -54,6 +57,7 @@ impl Route {
             Route::Images,
             Route::Studio,
             Route::Pricing,
+            Route::Publish,
             Route::Ideas,
             Route::Calendar,
             Route::Orders,
@@ -115,6 +119,8 @@ pub enum Handoff {
     Design { design_id: String, draft: String },
     /// 去「定价」:打开这个项目的成本模型
     Pricing { project_id: String },
+    /// 去「上架」:打开这个项目的草稿和发布包
+    Publish { project_id: String },
 }
 
 #[derive(Copy, Clone)]
@@ -147,6 +153,10 @@ pub struct AppState {
     pub cad_engine_progress: RwSignal<Option<(String, u64, u64)>>,
     /// 正在出图的那一轮走到了哪一步:`(phase, provider, count)`,由 image-progress 事件驱动
     pub image_progress: RwSignal<Option<(String, String, u32)>>,
+    /// 有新版本可以升级:`(新版本号, 更新说明)`。启动后静默查一次;设置页里也能手动查
+    pub update_available: RwSignal<Option<(String, String)>>,
+    /// 升级包下载到哪了:`(已下, 总数)`,由 update-progress 事件驱动
+    pub update_progress: RwSignal<Option<(u64, u64)>>,
     /// 开着的右键菜单(`ui::context_menu`)。元素上用 `state.open_menu(&ev, 菜单项)` 打开
     pub context_menu: RwSignal<Option<crate::ui::ContextMenu>>,
 }
@@ -175,6 +185,8 @@ impl AppState {
             cad_stream: RwSignal::new(LiveAnswer::default()),
             cad_engine_progress: RwSignal::new(None),
             image_progress: RwSignal::new(None),
+            update_available: RwSignal::new(None),
+            update_progress: RwSignal::new(None),
             context_menu: RwSignal::new(None),
         }
     }
@@ -248,6 +260,7 @@ mod tests {
             Route::Images,
             Route::Studio,
             Route::Pricing,
+            Route::Publish,
             Route::Ideas,
             Route::Calendar,
             Route::Orders,

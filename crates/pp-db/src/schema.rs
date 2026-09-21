@@ -9,7 +9,7 @@
 use rusqlite::Connection;
 
 /// 每加一段迁移就 +1。**已发布版本的迁移段不可修改**,只能追加。
-pub const SCHEMA_VERSION: u32 = 5;
+pub const SCHEMA_VERSION: u32 = 6;
 
 pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     let ver: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
@@ -34,6 +34,14 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         // 加列不是幂等的:升级到一半被打断(加了列、还没写回版本号),下次启动会再跑一遍——所以先看有没有
         add_column_if_missing(conn, "print_runs", "deleted_at", "INTEGER")?;
         conn.execute_batch(V5)?;
+    }
+    if ver < 6 {
+        // 上架与发布(M5):两张草稿表 v1 就有了,补几列;发布包是新表
+        add_column_if_missing(conn, "content_posts", "deleted_at", "INTEGER")?;
+        add_column_if_missing(conn, "content_posts", "ai_drafted", "INTEGER")?;
+        add_column_if_missing(conn, "listings", "deleted_at", "INTEGER")?;
+        add_column_if_missing(conn, "listings", "extra_json", "TEXT")?;
+        conn.execute_batch(V6)?;
     }
     if ver != SCHEMA_VERSION {
         conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
@@ -389,6 +397,29 @@ CREATE TABLE IF NOT EXISTS library_settings (
 );
 "#;
 
+/// v6:上架与发布(M5)。发布包 = 处理好的图 + 文案,落在资料库的一个文件夹里;出过的都留着。
+const V6: &str = r#"
+CREATE TABLE IF NOT EXISTS publish_packs (
+    id              TEXT PRIMARY KEY,
+    project_id      TEXT NOT NULL REFERENCES projects(id),
+    kind            TEXT NOT NULL,
+    draft_id        TEXT NOT NULL,
+    channel         TEXT NOT NULL,
+    dir             TEXT NOT NULL,
+    images_json     TEXT NOT NULL DEFAULT '[]',
+    title           TEXT NOT NULL DEFAULT '',
+    body            TEXT NOT NULL DEFAULT '',
+    tags_json       TEXT NOT NULL DEFAULT '[]',
+    lint_json       TEXT,
+    override_reason TEXT,
+    external_url    TEXT,
+    created_at      INTEGER NOT NULL,
+    deleted_at      INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_packs_project ON publish_packs(project_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_posts_project ON content_posts(project_id, updated_at);
+"#;
+
 /// 一次性数据回填是否做过(velo 做法)。
 pub fn migration_done(conn: &Connection, name: &str) -> rusqlite::Result<bool> {
     let n: i64 = conn.query_row(
@@ -426,7 +457,35 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(tables, 21);
+        assert_eq!(tables, 22);
+    }
+
+    #[test]
+    fn a_0_9_5_database_gains_the_publishing_bits_even_if_the_upgrade_was_interrupted_once() {
+        // 0.9.4 / 0.9.5 发出去的库是 v5
+        let conn = Connection::open_in_memory().unwrap();
+        for sql in [V1, V2, V3, V4] {
+            conn.execute_batch(sql).unwrap();
+        }
+        add_column_if_missing(&conn, "print_runs", "deleted_at", "INTEGER").unwrap();
+        conn.execute_batch(V5).unwrap();
+        conn.execute_batch("PRAGMA user_version = 5;").unwrap();
+        // 升级到一半被打断:列加上了,版本号还没写回
+        add_column_if_missing(&conn, "content_posts", "deleted_at", "INTEGER").unwrap();
+        add_column_if_missing(&conn, "listings", "extra_json", "TEXT").unwrap();
+
+        migrate(&conn).unwrap();
+        let ver: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(ver, SCHEMA_VERSION);
+        let has = |table: &str, column: &str| -> bool {
+            let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})")).unwrap();
+            let names: Vec<String> = stmt.query_map([], |r| r.get::<_, String>(1)).unwrap().map(Result::unwrap).collect();
+            names.iter().any(|n| n == column)
+        };
+        assert!(has("content_posts", "deleted_at") && has("content_posts", "ai_drafted"));
+        assert!(has("listings", "deleted_at") && has("listings", "extra_json"));
+        assert!(has("publish_packs", "override_reason"));
+        migrate(&conn).unwrap(); // 再跑一遍也没事
     }
 
     #[test]

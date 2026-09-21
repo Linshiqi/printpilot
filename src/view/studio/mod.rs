@@ -119,7 +119,8 @@ pub fn StudioView(state: AppState) -> impl IntoView {
         engine.set(None);
         spawn_local(async move {
             let mut info = ipc::call_no_args::<CadEngineInfo>(cmd::CAD_ENGINE_INFO).await;
-            if info.as_ref().is_ok_and(|i| i.needs_install) {
+            // 引擎包就在安装目录里:直接解,不用问。要联网下几百 MB 的(在线升级装的是精简包、这一版又换了引擎):先问一句
+            if info.as_ref().is_ok_and(|i| i.needs_install && !i.needs_download) {
                 state.cad_engine_progress.set(None);
                 engine.set(info.clone().ok());
                 installing.set(true);
@@ -145,6 +146,23 @@ pub fn StudioView(state: AppState) -> impl IntoView {
         });
     };
     check_engine();
+    // 用户点了「下载并安装引擎」
+    let download_engine = move || {
+        if installing.get_untracked() {
+            return;
+        }
+        state.cad_engine_progress.set(None);
+        installing.set(true);
+        spawn_local(async move {
+            let installed = ipc::call_unit_no_args(cmd::CAD_ENGINE_INSTALL).await;
+            installing.set(false);
+            state.cad_engine_progress.set(None);
+            if let Err(e) = installed {
+                state.notify_error(e);
+            }
+            check_engine();
+        });
+    };
 
     // ---- 设计 ----
     let reload_list = move || {
@@ -695,7 +713,7 @@ pub fn StudioView(state: AppState) -> impl IntoView {
                 // ---- 左:设计列表 ----
                 <aside class="w-52 shrink-0 h-full flex flex-col border-r border-gray-200 dark:border-gray-700">
                     <div class="p-3 space-y-3 border-b border-gray-200 dark:border-gray-700">
-                        <EngineBanner engine=engine installing=installing progress=state.cad_engine_progress on_recheck=check_engine/>
+                        <EngineBanner engine=engine installing=installing progress=state.cad_engine_progress on_recheck=check_engine on_download=download_engine/>
                         <Button icon=IconKind::Plus on_click=new_design>{move || t_string!(i18n, studio.new_design)}</Button>
                         <Show when=demo>
                             <p class="mt-2 text-[11px] leading-relaxed text-amber-600 dark:text-amber-400">{move || t_string!(i18n, studio.demo_note)}</p>
@@ -1095,16 +1113,19 @@ fn EngineBanner(
     installing: RwSignal<bool>,
     progress: RwSignal<Option<(String, u64, u64)>>,
     #[prop(into)] on_recheck: Callback<()>,
+    #[prop(into)] on_download: Callback<()>,
 ) -> impl IntoView {
     let i18n = use_i18n();
     move || match engine.get() {
         _ if installing.get() => {
             let mb = engine.with(|e| e.as_ref().map(|e| e.unpacked_bytes / 1_000_000).unwrap_or(0));
-            // 校验占前 15%,解包占后 85%(解包慢得多)
+            // 校验占前 15%,解包占后 85%(解包慢得多);下载单独算一条
             let percent = move || match progress.get() {
                 Some((phase, done, total)) if total > 0 => {
                     let part = done as f64 / total as f64;
-                    if phase == "verifying" {
+                    if phase == "downloading" {
+                        part * 100.0
+                    } else if phase == "verifying" {
                         part * 15.0
                     } else {
                         15.0 + part * 85.0
@@ -1114,7 +1135,13 @@ fn EngineBanner(
             };
             view! {
                 <div class="rounded-lg border border-indigo-200 bg-indigo-50 dark:bg-indigo-500/10 dark:border-indigo-500/40 px-3 py-2.5 space-y-2">
-                    <div class="text-xs font-semibold text-indigo-900 dark:text-indigo-100">{move || t_string!(i18n, cad.engine_installing_title)}</div>
+                    <div class="text-xs font-semibold text-indigo-900 dark:text-indigo-100">
+                        {move || if progress.with(|p| p.as_ref().is_some_and(|p| p.0 == "downloading")) {
+                            t_string!(i18n, cad.engine_downloading_title)
+                        } else {
+                            t_string!(i18n, cad.engine_installing_title)
+                        }}
+                    </div>
                     <p class="text-xs leading-relaxed text-indigo-900/80 dark:text-indigo-100/80">
                         {move || t_string!(i18n, cad.engine_installing_hint, mb = mb).to_string()}
                     </p>
@@ -1136,6 +1163,17 @@ fn EngineBanner(
                     python = info.python_version.clone(),
                 ).to_string()}
             </p>
+        }
+        .into_any(),
+        // 这一版要的引擎不在安装目录里(在线升级装的是精简包):几百 MB,让用户自己点
+        Some(info) if info.needs_download => view! {
+            <div class="rounded-lg border border-indigo-200 bg-indigo-50 dark:bg-indigo-500/10 dark:border-indigo-500/40 px-3 py-2.5 space-y-2">
+                <div class="text-xs font-semibold text-indigo-900 dark:text-indigo-100">{move || t_string!(i18n, cad.engine_download_title)}</div>
+                <p class="text-xs leading-relaxed text-indigo-900/80 dark:text-indigo-100/80">
+                    {move || t_string!(i18n, cad.engine_download_hint, mb = info.download_bytes / 1_000_000).to_string()}
+                </p>
+                <Button small=true icon=IconKind::Download on_click=move || on_download.run(())>{move || t_string!(i18n, cad.engine_download_go)}</Button>
+            </div>
         }
         .into_any(),
         Some(info) => view! {

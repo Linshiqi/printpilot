@@ -53,6 +53,9 @@ pub fn localize_backend_err(raw: &str) -> String {
         errcode::CAD_TIMEOUT => td_string!(l, backend.cad_timeout),
         errcode::CAD_SCRIPT_ERROR => td_string!(l, backend.cad_script_error),
         errcode::IMAGE_UNREADABLE => td_string!(l, backend.image_unreadable),
+        errcode::LINT_BLOCKED => td_string!(l, backend.lint_blocked),
+        errcode::UPDATE_CHECK_FAILED => td_string!(l, backend.update_check_failed),
+        errcode::UPDATE_INSTALL_FAILED => td_string!(l, backend.update_install_failed),
         // 用户自己点的停止:不带细节,`is_cancelled` 靠整句相等来认它
         errcode::CANCELLED => return td_string!(l, backend.cancelled).to_string(),
         _ => td_string!(l, backend.unknown),
@@ -79,6 +82,8 @@ pub fn gate_label(l: Locale, key: GateKey) -> &'static str {
         GateKey::Model => td_string!(l, project.gate_model),
         GateKey::PrintRun => td_string!(l, project.gate_print_run),
         GateKey::Price => td_string!(l, project.gate_price),
+        GateKey::PublishPack => td_string!(l, project.gate_publish_pack),
+        GateKey::Published => td_string!(l, project.gate_published),
     }
 }
 
