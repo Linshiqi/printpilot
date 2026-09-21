@@ -50,18 +50,23 @@ pub mod cmd {
 
     pub const CAD_ENGINE_INFO: &str = "cad_engine_info";
     pub const CAD_ENGINE_INSTALL: &str = "cad_engine_install";
-    pub const CAD_IMPORT_REFERENCE: &str = "cad_import_reference";
-    pub const CAD_DESIGN_SPEC: &str = "cad_design_spec";
-    pub const CAD_GENERATE: &str = "cad_generate";
-    pub const CAD_EDIT: &str = "cad_edit";
-    pub const CAD_REVIEW: &str = "cad_review";
-    pub const CAD_RUN: &str = "cad_run";
-    pub const CAD_SET_PARAM: &str = "cad_set_param";
-    pub const CAD_LIST_VERSIONS: &str = "cad_list_versions";
-    #[allow(dead_code)]
-    pub const CAD_GET_VERSION: &str = "cad_get_version";
-    pub const CAD_DELETE_VERSION: &str = "cad_delete_version";
     pub const CAD_EXPORT: &str = "cad_export";
+
+    pub const DESIGN_LIST: &str = "design_list";
+    pub const DESIGN_CREATE: &str = "design_create";
+    pub const DESIGN_GET: &str = "design_get";
+    pub const DESIGN_RENAME: &str = "design_rename";
+    pub const DESIGN_DELETE: &str = "design_delete";
+    pub const DESIGN_LINK_PROJECT: &str = "design_link_project";
+    pub const DESIGN_SET_THUMB: &str = "design_set_thumb";
+    pub const DESIGN_SELECT_VERSION: &str = "design_select_version";
+    pub const DESIGN_ADD_IMAGE: &str = "design_add_image";
+    pub const DESIGN_REMOVE_REFERENCE: &str = "design_remove_reference";
+    pub const DESIGN_SEND: &str = "design_send";
+    pub const DESIGN_GENERATE: &str = "design_generate";
+    pub const DESIGN_SET_PARAM: &str = "design_set_param";
+    pub const DESIGN_RUN_CODE: &str = "design_run_code";
+    pub const DESIGN_REVIEW: &str = "design_review";
 
     pub const OPEN_URL: &str = "plugin:opener|open_url";
 }

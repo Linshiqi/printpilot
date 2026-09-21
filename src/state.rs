@@ -13,6 +13,8 @@ use crate::theme::Theme;
 pub enum Route {
     Dashboard,
     Projects,
+    /// 建模工作室(看图 → 代码建模,对话式修改)
+    Studio,
     Ideas,
     Calendar,
     Orders,
@@ -26,6 +28,7 @@ impl Route {
         match self {
             Route::Dashboard => "dashboard",
             Route::Projects => "projects",
+            Route::Studio => "studio",
             Route::Ideas => "ideas",
             Route::Calendar => "calendar",
             Route::Orders => "orders",
@@ -39,6 +42,7 @@ impl Route {
         [
             Route::Dashboard,
             Route::Projects,
+            Route::Studio,
             Route::Ideas,
             Route::Calendar,
             Route::Orders,
@@ -137,6 +141,7 @@ mod tests {
         for r in [
             Route::Dashboard,
             Route::Projects,
+            Route::Studio,
             Route::Ideas,
             Route::Calendar,
             Route::Orders,

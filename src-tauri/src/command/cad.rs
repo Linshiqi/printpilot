@@ -1,9 +1,7 @@
 //! 代码式 CAD 命令(docs/adr/0003-code-cad-build123d.md)。
 //!
-//! 三种「改模型」的路,代价从低到高:
-//! - `cad_set_param`:只改 PARAMS 段里的一个数字,重新执行。不经过模型,不花钱,一两秒;
-//! - `cad_edit`:一句话指令,模型只改相关的 FEATURE 段,改了哪些段由我们比对出来;
-//! - `cad_generate`:从(人审过的)设计规格重新写一版。
+//! 这里是「引擎这一侧」:引擎状态与安装、真执行器(常驻进程)、执行产物入库、参考图处理、演示脚本、导出。
+//! 面向用户的建模命令(设计、对话、时间线)在 `command/design.rs`,它复用这里的内部函数。
 //!
 //! 每次成功都存成一个新版本(`cad_versions`,父子关系 = 版本树),STL / STEP 作为资产入库。
 
@@ -15,11 +13,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use pp_agent::{design_spec, edit_model, generate_model, review_model, AgentError, CadBuild, CadConfig, CadExecutor, CadProgress};
-use pp_cad::{engine_info, parse_params, set_param, CadError, Engine, ParamError, RunOptions, RunOutput, Worker};
-use pp_common::cad::{
-    CadBuildReport, CadBuildResult, CadEngineInfo, CadMetrics, CadPick, CadReviewResult, CadSpecResult, CadVersion, DesignSpec,
-};
+use pp_agent::{AgentError, CadConfig, CadExecutor, CadProgress};
+use pp_cad::{engine_info, parse_params, CadError, Engine, RunOptions, RunOutput, Worker};
+use pp_common::cad::{CadBuildReport, CadEngineInfo, CadMetrics, CadVersion, DesignSpec};
 use pp_common::{errcode, Asset, AssetKind};
 use pp_db::{NewAsset, NewCadVersion};
 use pp_providers::llm::{image_data_url, LlmPricing, LlmProvider, MockLlm};
@@ -36,7 +32,7 @@ const PROGRESS_EVENT: &str = "cad-progress";
 /// 引擎包解包进度。载荷:`{ phase: verifying|extracting|done, done, total }`
 const ENGINE_PROGRESS_EVENT: &str = "cad-engine-progress";
 /// 一次看图最多带几张参考图 / 渲染图
-const MAX_REFERENCE_IMAGES: usize = 4;
+pub(crate) const MAX_REFERENCE_IMAGES: usize = 4;
 const MAX_RENDER_IMAGES: usize = 6;
 /// 参考图入库时缩到的最长边(像素)。视觉模型每张图的 token 有上限,再大也是白传
 const REFERENCE_MAX_SIDE: u32 = 1536;
@@ -46,19 +42,19 @@ const WORKER_MAX_JOBS: u32 = 40;
 /// 等常驻进程就绪的上限:冷盘上 import build123d 可能要十几秒
 const WORKER_READY_TIMEOUT: Duration = Duration::from_secs(90);
 
-fn cad_err(e: CadError) -> String {
+pub(crate) fn cad_err(e: CadError) -> String {
     errcode::err(e.code(), e)
 }
 
-fn agent_err(e: AgentError) -> String {
+pub(crate) fn agent_err(e: AgentError) -> String {
     errcode::err(e.code(), e)
 }
 
-fn fs_err(e: std::io::Error) -> String {
+pub(crate) fn fs_err(e: std::io::Error) -> String {
     errcode::err(errcode::IO_FAILED, e)
 }
 
-fn invalid(detail: impl std::fmt::Display) -> String {
+pub(crate) fn invalid(detail: impl std::fmt::Display) -> String {
     errcode::err(errcode::INVALID_INPUT, detail)
 }
 
@@ -73,7 +69,7 @@ fn progress_payload(p: &CadProgress) -> serde_json::Value {
     }
 }
 
-fn emitter(app: &AppHandle) -> impl Fn(CadProgress) + Send + Sync {
+pub(crate) fn emitter(app: &AppHandle) -> impl Fn(CadProgress) + Send + Sync {
     let app = app.clone();
     move |p: CadProgress| {
         let _ = app.emit(PROGRESS_EVENT, progress_payload(&p));
@@ -157,7 +153,7 @@ fn run_code(ctx: &AppCtx, engine: &Engine, code: &str, dir: &Path, opts: &RunOpt
 }
 
 /// 真引擎执行器。流水线交付的不一定是最后一次执行的那版(它挑问题最少的),所以每次成功的产物都按代码留着。
-struct EngineExecutor {
+pub(crate) struct EngineExecutor {
     ctx: Arc<AppCtx>,
     engine: Engine,
     session: Session,
@@ -167,7 +163,7 @@ struct EngineExecutor {
 }
 
 impl EngineExecutor {
-    fn new(ctx: &Arc<AppCtx>) -> Result<Self, String> {
+    pub(crate) fn new(ctx: &Arc<AppCtx>) -> Result<Self, String> {
         let engine = Engine::locate(&ctx.data_root).ok_or_else(|| cad_err(CadError::EngineMissing))?;
         Ok(Self {
             ctx: ctx.clone(),
@@ -179,7 +175,7 @@ impl EngineExecutor {
         })
     }
 
-    fn take_output(&self, code: &str) -> Option<RunOutput> {
+    pub(crate) fn take_output(&self, code: &str) -> Option<RunOutput> {
         self.outputs.lock().unwrap_or_else(|e| e.into_inner()).remove(code)
     }
 }
@@ -201,7 +197,7 @@ impl CadExecutor for EngineExecutor {
 
 // ---------------------------------------------------------------- 入库
 
-fn folder_for(ctx: &AppCtx, project_id: Option<&str>) -> Result<String, String> {
+pub(crate) fn folder_for(ctx: &AppCtx, project_id: Option<&str>) -> Result<String, String> {
     match project_id {
         Some(id) => Ok(ctx.db.get_project(id).map_err(|e| e.to_wire())?.code),
         None => Ok("lab".to_string()),
@@ -235,18 +231,19 @@ fn store_file(
 }
 
 /// 这一版「是怎么来的」。
-struct Lineage {
-    project_id: Option<String>,
-    parent: Option<CadVersion>,
-    source: &'static str,
-    note: String,
-    spec: Option<DesignSpec>,
-    ref_asset_ids: Vec<String>,
-    report: Option<CadBuildReport>,
+pub(crate) struct Lineage {
+    pub design_id: Option<String>,
+    pub project_id: Option<String>,
+    pub parent: Option<CadVersion>,
+    pub source: &'static str,
+    pub note: String,
+    pub spec: Option<DesignSpec>,
+    pub ref_asset_ids: Vec<String>,
+    pub report: Option<CadBuildReport>,
 }
 
 /// 执行产物 → 资产 + 版本。STL 顺带做一次网格分析写进 `meta_json`——它是一个普通的模型资产,「模型」页的工具都能接着用。
-fn persist(ctx: &AppCtx, code: &str, output: &RunOutput, lineage: Lineage) -> Result<CadVersion, String> {
+pub(crate) fn persist(ctx: &AppCtx, code: &str, output: &RunOutput, lineage: Lineage) -> Result<CadVersion, String> {
     let stl_path = output
         .files
         .get("stl")
@@ -269,6 +266,7 @@ fn persist(ctx: &AppCtx, code: &str, output: &RunOutput, lineage: Lineage) -> Re
     let version = ctx
         .db
         .insert_cad_version(&NewCadVersion {
+            design_id: lineage.design_id.clone(),
             project_id: lineage.project_id.clone(),
             parent_id: lineage.parent.as_ref().map(|p| p.id.clone()),
             source: lineage.source.to_string(),
@@ -297,7 +295,7 @@ fn persist(ctx: &AppCtx, code: &str, output: &RunOutput, lineage: Lineage) -> Re
     Ok(version)
 }
 
-fn check_code(code: &str) -> Result<(), String> {
+pub(crate) fn check_code(code: &str) -> Result<(), String> {
     if code.trim().is_empty() {
         return Err(invalid("code is empty"));
     }
@@ -311,7 +309,7 @@ fn check_code(code: &str) -> Result<(), String> {
 
 /// 参考图入库前的处理:按 EXIF 摆正 → 缩到最长边 1536 → 透明底铺白 → 重新编码成 JPEG。
 /// 重新编码同时去掉了 EXIF(手机照片里有 GPS 和机型)——这张图之后要发给第三方的视觉模型。
-fn prepare_reference(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), String> {
+pub(crate) fn prepare_reference(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), String> {
     use image::{DynamicImage, ImageDecoder, ImageReader};
     let unreadable = |e: image::ImageError| errcode::err(errcode::IMAGE_UNREADABLE, e);
 
@@ -343,38 +341,8 @@ fn prepare_reference(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), String> {
     Ok((out, w, h))
 }
 
-/// 导入一张参考图(用户自己的照片、截图,或别处生成的产品预览图)。
-#[tauri::command(rename_all = "snake_case")]
-pub async fn cad_import_reference(ctx: State<'_, Arc<AppCtx>>, path: String, project_id: Option<String>) -> Result<Asset, String> {
-    let ctx = ctx.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let src = Path::new(&path);
-        let size = std::fs::metadata(src).map_err(fs_err)?.len();
-        if size > 64 * 1024 * 1024 {
-            return Err(invalid("image is larger than 64 MB"));
-        }
-        let (jpeg, w, h) = prepare_reference(&std::fs::read(src).map_err(fs_err)?)?;
-
-        let mut new = NewAsset::new(AssetKind::Image, "cad_reference", "", "jpg", jpeg.len() as i64);
-        new.rel_path = format!("assets/{}/{}.jpg", folder_for(&ctx, project_id.as_deref())?, new.id);
-        new.project_id = project_id;
-        let name = src.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        new.meta_json = Some(json!({ "width": w, "height": h, "original_name": name }).to_string());
-        let dest = ctx.asset_path(&new.rel_path);
-        if let Some(dir) = dest.parent() {
-            std::fs::create_dir_all(dir).map_err(fs_err)?;
-        }
-        std::fs::write(&dest, &jpeg).map_err(fs_err)?;
-        let asset = ctx.db.insert_asset(&new).map_err(|e| e.to_wire())?;
-        log::info!("[cad] 参考图 {name} → {w} × {h} · {:.0} KB(已去除 EXIF)", jpeg.len() as f64 / 1024.0);
-        Ok(asset)
-    })
-    .await
-    .map_err(join_err)?
-}
-
 /// 参考图资产 → data URL。只认图片资产。
-fn reference_data_urls(ctx: &AppCtx, ids: &[String]) -> Result<Vec<String>, String> {
+pub(crate) fn reference_data_urls(ctx: &AppCtx, ids: &[String]) -> Result<Vec<String>, String> {
     if ids.len() > MAX_REFERENCE_IMAGES {
         return Err(invalid(format!("at most {MAX_REFERENCE_IMAGES} reference images")));
     }
@@ -391,7 +359,7 @@ fn reference_data_urls(ctx: &AppCtx, ids: &[String]) -> Result<Vec<String>, Stri
 }
 
 /// 前端截的渲染图:只收 `data:image/…;base64,`,并限制张数与大小。
-fn check_renders(renders: &[String]) -> Result<(), String> {
+pub(crate) fn check_renders(renders: &[String]) -> Result<(), String> {
     if renders.is_empty() || renders.len() > MAX_RENDER_IMAGES {
         return Err(invalid(format!("expected 1 to {MAX_RENDER_IMAGES} render images")));
     }
@@ -407,7 +375,7 @@ fn check_renders(renders: &[String]) -> Result<(), String> {
 // ---------------------------------------------------------------- 演示模式
 
 /// 演示用的设计规格与脚本。脚本是真的 build123d 代码,在真引擎上跑——演示模式只是不联网、不花钱。
-const DEMO_SPEC: &str = r#"{
+pub(crate) const DEMO_SPEC: &str = r#"{
   "name": "三槽线缆夹(演示)",
   "summary": "演示数据:放在桌沿的线缆夹,三道线槽,底部留双面胶位。",
   "suitable": true,
@@ -421,7 +389,7 @@ const DEMO_SPEC: &str = r#"{
   "print_notes": "线槽开口朝上,无需支撑"
 }"#;
 
-const DEMO_CODE: &str = r#"from build123d import *
+pub(crate) const DEMO_CODE: &str = r#"from build123d import *
 
 # ---- PARAMS ----
 length = 60.0        # mm | 总长 | [30, 200]
@@ -451,19 +419,19 @@ result = body
 "#;
 
 /// 演示的第一版故意带一个真实会发生的错误(圆角比壁厚还大),让「报错 → 喂回去 → 修好」这条路在界面上看得见。
-fn demo_broken_code() -> String {
+pub(crate) fn demo_broken_code() -> String {
     DEMO_CODE.replace("length=entry_chamfer)", "length=entry_chamfer * 40)")
 }
 
 /// 演示的「指令修补」:不管指令是什么,都只在末尾加一段「底边倒角」(FDM 上用来抵消第一层的「象脚」外扩)。
-fn demo_edit(code: &str) -> String {
+pub(crate) fn demo_edit(code: &str) -> String {
     format!(
         "{}\n\n# ---- FEATURE: demo_bottom_chamfer ----\n# 演示模式:不理解指令内容,固定演示「只新增一个特征段、其余逐字不动」\nresult = chamfer(result.edges().group_by(Axis.Z)[0], length=0.6)\n",
         code.trim_end()
     )
 }
 
-fn fenced(code: &str) -> String {
+pub(crate) fn fenced(code: &str) -> String {
     format!("```python\n{code}\n```")
 }
 
@@ -477,7 +445,7 @@ fn free(cfg: &mut CadConfig) {
     cfg.code_pricing = zero;
 }
 
-fn cad_config(demo: bool) -> CadConfig {
+pub(crate) fn cad_config(demo: bool) -> CadConfig {
     let mut cfg = CadConfig::default();
     if demo {
         free(&mut cfg);
@@ -485,7 +453,7 @@ fn cad_config(demo: bool) -> CadConfig {
     cfg
 }
 
-fn llm_or_demo(ctx: &AppCtx, demo_answers: Vec<String>) -> Result<Box<dyn LlmProvider>, String> {
+pub(crate) fn llm_or_demo(ctx: &AppCtx, demo_answers: Vec<String>) -> Result<Box<dyn LlmProvider>, String> {
     if ctx.config().demo_mode {
         Ok(Box::new(MockLlm::new(demo_answers)))
     } else {
@@ -591,263 +559,6 @@ pub async fn cad_engine_install(app: AppHandle, ctx: State<'_, Arc<AppCtx>>) -> 
     .map_err(join_err)?
 }
 
-/// 执行一段(手写 / 粘贴 / 手改过的)代码,成功则存成新版本。
-#[tauri::command(rename_all = "snake_case")]
-pub async fn cad_run(
-    ctx: State<'_, Arc<AppCtx>>,
-    code: String,
-    project_id: Option<String>,
-    parent_id: Option<String>,
-) -> Result<CadVersion, String> {
-    check_code(&code)?;
-    let ctx = ctx.inner().clone();
-    let exec = EngineExecutor::new(&ctx)?;
-    exec.execute(&code).await.map_err(cad_err)?;
-    let output = exec.take_output(&code).ok_or_else(|| cad_err(CadError::Protocol("no output".into())))?;
-    tauri::async_runtime::spawn_blocking(move || {
-        let parent = parent_id.map(|id| ctx.db.get_cad_version(&id).map_err(|e| e.to_wire())).transpose()?;
-        let lineage = Lineage {
-            project_id: project_id.or_else(|| parent.as_ref().and_then(|p| p.project_id.clone())),
-            spec: parent.as_ref().and_then(|p| p.spec.clone()),
-            ref_asset_ids: parent.as_ref().map(|p| p.ref_asset_ids.clone()).unwrap_or_default(),
-            parent,
-            source: "manual",
-            note: String::new(),
-            report: None,
-        };
-        persist(&ctx, &code, &output, lineage)
-    })
-    .await
-    .map_err(join_err)?
-}
-
-/// 改一个参数:只换 PARAMS 段里那一个数字,重新执行。不经过模型。
-#[tauri::command(rename_all = "snake_case")]
-pub async fn cad_set_param(ctx: State<'_, Arc<AppCtx>>, version_id: String, name: String, value: f64) -> Result<CadVersion, String> {
-    let ctx = ctx.inner().clone();
-    let parent = ctx.db.get_cad_version(&version_id).map_err(|e| e.to_wire())?;
-    let before = parent.params.iter().find(|p| p.name == name).map(|p| p.value);
-    let code = set_param(&parent.code, &name, value).map_err(|e| match e {
-        ParamError::UnknownParam(_) => errcode::err(errcode::NOT_FOUND, e),
-        _ => invalid(e),
-    })?;
-
-    let exec = EngineExecutor::new(&ctx)?;
-    exec.execute(&code).await.map_err(cad_err)?;
-    let output = exec.take_output(&code).ok_or_else(|| cad_err(CadError::Protocol("no output".into())))?;
-    tauri::async_runtime::spawn_blocking(move || {
-        let fmt = |v: f64| if v.fract() == 0.0 { format!("{v:.0}") } else { format!("{v}") };
-        let note = format!("{name}: {} → {}", before.map(fmt).unwrap_or_default(), fmt(value));
-        let lineage = Lineage {
-            project_id: parent.project_id.clone(),
-            spec: parent.spec.clone(),
-            ref_asset_ids: parent.ref_asset_ids.clone(),
-            parent: Some(parent),
-            source: "param",
-            note,
-            report: None,
-        };
-        persist(&ctx, &code, &output, lineage)
-    })
-    .await
-    .map_err(join_err)?
-}
-
-#[tauri::command(rename_all = "snake_case")]
-pub async fn cad_list_versions(ctx: State<'_, Arc<AppCtx>>, project_id: Option<String>) -> Result<Vec<CadVersion>, String> {
-    ctx.db.list_cad_versions(project_id.as_deref()).map_err(|e| e.to_wire())
-}
-
-#[tauri::command(rename_all = "snake_case")]
-pub async fn cad_get_version(ctx: State<'_, Arc<AppCtx>>, id: String) -> Result<CadVersion, String> {
-    ctx.db.get_cad_version(&id).map_err(|e| e.to_wire())
-}
-
-#[tauri::command(rename_all = "snake_case")]
-pub async fn cad_delete_version(ctx: State<'_, Arc<AppCtx>>, id: String) -> Result<(), String> {
-    ctx.db.delete_cad_version(&id).map_err(|e| e.to_wire())
-}
-
-/// 参考图 + 文字要求 → 设计规格(给人审)。
-#[tauri::command(rename_all = "snake_case")]
-pub async fn cad_design_spec(
-    app: AppHandle,
-    ctx: State<'_, Arc<AppCtx>>,
-    brief: String,
-    ref_asset_ids: Vec<String>,
-) -> Result<CadSpecResult, String> {
-    let ctx = ctx.inner().clone();
-    let demo = ctx.config().demo_mode;
-    let images = {
-        let (ctx, ids) = (ctx.clone(), ref_asset_ids.clone());
-        tauri::async_runtime::spawn_blocking(move || reference_data_urls(&ctx, &ids))
-            .await
-            .map_err(join_err)??
-    };
-    let llm = llm_or_demo(&ctx, vec![DEMO_SPEC.to_string()])?;
-    let (spec, report) = design_spec(llm.as_ref(), &brief, &images, &cad_config(demo), &emitter(&app))
-        .await
-        .map_err(agent_err)?;
-    log::info!(
-        "[cad] 规格「{}」· {} 个特征 · {} 张图 · {:.2} 分 · {}ms{}",
-        spec.name,
-        spec.features.len(),
-        images.len(),
-        report.cost_fen,
-        report.elapsed_ms,
-        if demo { " · 演示模式" } else { "" }
-    );
-    let _ = ctx.db.add_cost(None, "model3d", report.cost_fen, &format!("{} · 看图出规格", spec.name));
-    Ok(CadSpecResult {
-        spec,
-        ref_asset_ids,
-        report,
-    })
-}
-
-fn build_result(
-    ctx: &Arc<AppCtx>,
-    exec: &EngineExecutor,
-    build: CadBuild,
-    lineage: Lineage,
-    cost_note: String,
-) -> Result<CadBuildResult, String> {
-    let _ = ctx.db.add_cost(lineage.project_id.as_deref(), "model3d", build.report.cost_fen, &cost_note);
-    log::info!(
-        "[cad] {cost_note}:{} · {} 次模型调用 · {} 次执行 · {} 轮未通过 · {} 条遗留 · {:.2} 分 · {}ms",
-        if build.metrics.is_some() { "建成" } else { "没有一版能跑" },
-        build.report.llm_calls,
-        build.report.runs,
-        build.report.rounds.len(),
-        build.report.warnings.len(),
-        build.report.cost_fen,
-        build.report.elapsed_ms
-    );
-    let version = match (&build.metrics, exec.take_output(&build.code)) {
-        (Some(_), Some(output)) => Some(persist(
-            ctx,
-            &build.code,
-            &output,
-            Lineage {
-                report: Some(build.report.clone()),
-                ..lineage
-            },
-        )?),
-        _ => None,
-    };
-    Ok(CadBuildResult {
-        version,
-        code: build.code,
-        report: build.report,
-    })
-}
-
-/// 按(人审过的)设计规格生成模型:写代码 → 真引擎执行 → 检查 → 不合格就修。
-#[tauri::command(rename_all = "snake_case")]
-pub async fn cad_generate(
-    app: AppHandle,
-    ctx: State<'_, Arc<AppCtx>>,
-    spec: DesignSpec,
-    ref_asset_ids: Vec<String>,
-    project_id: Option<String>,
-) -> Result<CadBuildResult, String> {
-    let ctx = ctx.inner().clone();
-    let demo = ctx.config().demo_mode;
-    let exec = EngineExecutor::new(&ctx)?; // 先确认引擎在,再去花模型的钱
-    let llm = llm_or_demo(&ctx, vec![fenced(&demo_broken_code()), fenced(DEMO_CODE)])?;
-    let build = generate_model(llm.as_ref(), &exec, &spec, &cad_config(demo), &emitter(&app))
-        .await
-        .map_err(agent_err)?;
-
-    let note = format!("{} · 生成", spec.name);
-    let lineage = Lineage {
-        project_id,
-        parent: None,
-        source: "generate",
-        note: spec.name.clone(),
-        spec: Some(spec),
-        ref_asset_ids,
-        report: None,
-    };
-    tauri::async_runtime::spawn_blocking(move || build_result(&ctx, &exec, build, lineage, note))
-        .await
-        .map_err(join_err)?
-}
-
-/// 指令修补(局部修改):一句话 → 只改相关的段 → 新版本。
-#[tauri::command(rename_all = "snake_case")]
-pub async fn cad_edit(
-    app: AppHandle,
-    ctx: State<'_, Arc<AppCtx>>,
-    version_id: String,
-    instruction: String,
-    pick: Option<CadPick>,
-) -> Result<CadBuildResult, String> {
-    let ctx = ctx.inner().clone();
-    let demo = ctx.config().demo_mode;
-    let parent = ctx.db.get_cad_version(&version_id).map_err(|e| e.to_wire())?;
-    let exec = EngineExecutor::new(&ctx)?;
-    let llm = llm_or_demo(&ctx, vec![fenced(&demo_edit(&parent.code))])?;
-    let build = edit_model(llm.as_ref(), &exec, &parent.code, &instruction, pick, &cad_config(demo), &emitter(&app))
-        .await
-        .map_err(agent_err)?;
-
-    let note = format!("{} · 修补", parent.spec.as_ref().map(|s| s.name.as_str()).unwrap_or("模型"));
-    let lineage = Lineage {
-        project_id: parent.project_id.clone(),
-        spec: parent.spec.clone(),
-        ref_asset_ids: parent.ref_asset_ids.clone(),
-        parent: Some(parent),
-        source: "edit",
-        note: instruction.trim().to_string(),
-        report: None,
-    };
-    tauri::async_runtime::spawn_blocking(move || build_result(&ctx, &exec, build, lineage, note))
-        .await
-        .map_err(join_err)?
-}
-
-/// 看图复核:前端截的几张渲染图 vs 这一版的参考图 → 差异清单(每条都是一句可以直接交给 `cad_edit` 的指令)。
-#[tauri::command(rename_all = "snake_case")]
-pub async fn cad_review(
-    app: AppHandle,
-    ctx: State<'_, Arc<AppCtx>>,
-    version_id: String,
-    renders: Vec<String>,
-) -> Result<CadReviewResult, String> {
-    check_renders(&renders)?;
-    let ctx = ctx.inner().clone();
-    let demo = ctx.config().demo_mode;
-    let version = ctx.db.get_cad_version(&version_id).map_err(|e| e.to_wire())?;
-    if version.ref_asset_ids.is_empty() {
-        return Err(invalid("this version has no reference image to compare against"));
-    }
-    let references = {
-        let (ctx, ids) = (ctx.clone(), version.ref_asset_ids.clone());
-        tauri::async_runtime::spawn_blocking(move || reference_data_urls(&ctx, &ids))
-            .await
-            .map_err(join_err)??
-    };
-    let demo_answer = json!({
-        "matches": false,
-        "differences": ["演示数据:线槽底部应为半圆形(U 形槽),现在是直角槽"]
-    });
-    let llm = llm_or_demo(&ctx, vec![demo_answer.to_string()])?;
-    let (review, report) = review_model(llm.as_ref(), &references, &renders, version.spec.as_ref(), &cad_config(demo), &emitter(&app))
-        .await
-        .map_err(agent_err)?;
-    log::info!(
-        "[cad] 复核 {}:{} · {} 条差异 · {:.2} 分 · {}ms",
-        version.id,
-        if review.matches { "一致" } else { "有出入" },
-        review.differences.len(),
-        report.cost_fen,
-        report.elapsed_ms
-    );
-    let _ = ctx.db.add_cost(version.project_id.as_deref(), "model3d", report.cost_fen, "看图复核");
-    Ok(CadReviewResult { review, report })
-}
-
 /// 导出到用户选的位置。`format`:`step`(源头真值,能进任何 CAD)| `stl` | `3mf`。
 #[tauri::command(rename_all = "snake_case")]
 pub async fn cad_export(ctx: State<'_, Arc<AppCtx>>, version_id: String, format: String, dest_path: String) -> Result<(), String> {
@@ -889,6 +600,7 @@ pub async fn cad_export(ctx: State<'_, Arc<AppCtx>>, version_id: String, format:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pp_agent::{edit_model, generate_model};
     use pp_cad::contract::changed_sections;
 
     #[test]

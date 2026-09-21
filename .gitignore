@@ -35,3 +35,7 @@ Thumbs.db
 # 建模引擎包:构建产物(约 200 MB),由 scripts/build-engine-pack.py 或 CI 生成
 src-tauri/resources/cad-engine/cad-engine.tar.zst
 src-tauri/resources/cad-engine/cad-engine.json
+
+# Python 字节码(跑执行器测试时产生)
+__pycache__/
+*.pyc

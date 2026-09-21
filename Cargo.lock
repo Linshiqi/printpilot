@@ -3964,7 +3964,7 @@ dependencies = [
 
 [[package]]
 name = "printpilot"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "async-trait",
  "image",
@@ -3992,7 +3992,7 @@ dependencies = [
 
 [[package]]
 name = "printpilot-ui"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "console_error_panic_hook",
  "js-sys",

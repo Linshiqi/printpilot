@@ -6,3 +6,4 @@ pub mod placeholder;
 pub mod project_drawer;
 pub mod settings;
 pub mod sidebar;
+pub mod studio;

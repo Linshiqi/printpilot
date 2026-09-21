@@ -4,10 +4,12 @@
 //! 质量稳定、成本可控,而且能用脚本化的假模型做回归测试——这三点对一个要花用户钱的功能都是必须的。
 
 pub mod cad;
+pub mod chat;
 mod json;
 pub mod research;
 
 pub use cad::{design_spec, edit_model, generate_model, review_model, CadBuild, CadConfig, CadExecutor, CadProgress};
+pub use chat::{chat_turn, describe_images, split_answer, ChatLine, ChatOutcome, ChatTurn};
 pub use json::{ask_json, extract_json};
 pub use research::{run_research, ResearchConfig, ResearchProgress};
 

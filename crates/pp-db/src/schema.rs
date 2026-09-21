@@ -9,7 +9,7 @@
 use rusqlite::Connection;
 
 /// 每加一段迁移就 +1。**已发布版本的迁移段不可修改**,只能追加。
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 
 pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     let ver: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
@@ -23,6 +23,9 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     }
     if ver < 2 {
         conn.execute_batch(V2)?;
+    }
+    if ver < 3 {
+        conn.execute_batch(V3)?;
     }
     if ver != SCHEMA_VERSION {
         conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
@@ -271,6 +274,41 @@ CREATE TABLE IF NOT EXISTS cad_versions (
 CREATE INDEX IF NOT EXISTS idx_cad_versions_project ON cad_versions(project_id, created_at);
 "#;
 
+/// v3:建模工作室。**设计** = 一个零件的一条建模线索(参考图、规格、对话、版本树);
+/// 对话与时间线事件存在 `cad_messages`;版本通过 `design_id` 归到设计名下。
+/// (v2 已随 0.9.0 发布,不能再改,所以 `design_id` 用 ALTER TABLE 追加。)
+const V3: &str = r#"
+CREATE TABLE IF NOT EXISTS cad_designs (
+    id                 TEXT PRIMARY KEY,
+    project_id         TEXT REFERENCES projects(id),
+    name               TEXT NOT NULL,
+    spec_json          TEXT,
+    ref_asset_ids_json TEXT NOT NULL DEFAULT '[]',
+    current_version_id TEXT,
+    thumb              TEXT,
+    created_at         INTEGER NOT NULL,
+    updated_at         INTEGER NOT NULL,
+    deleted_at         INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_cad_designs_updated ON cad_designs(updated_at);
+
+CREATE TABLE IF NOT EXISTS cad_messages (
+    id                   TEXT PRIMARY KEY,
+    design_id            TEXT NOT NULL REFERENCES cad_designs(id),
+    role                 TEXT NOT NULL,
+    kind                 TEXT NOT NULL,
+    content              TEXT NOT NULL DEFAULT '',
+    extra_json           TEXT NOT NULL DEFAULT '{}',
+    image_asset_ids_json TEXT NOT NULL DEFAULT '[]',
+    version_id           TEXT REFERENCES cad_versions(id),
+    created_at           INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_cad_messages_design ON cad_messages(design_id, created_at);
+
+ALTER TABLE cad_versions ADD COLUMN design_id TEXT REFERENCES cad_designs(id);
+CREATE INDEX IF NOT EXISTS idx_cad_versions_design ON cad_versions(design_id, created_at);
+"#;
+
 /// 一次性数据回填是否做过(velo 做法)。
 pub fn migration_done(conn: &Connection, name: &str) -> rusqlite::Result<bool> {
     let n: i64 = conn.query_row(
@@ -308,7 +346,39 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(tables, 15);
+        assert_eq!(tables, 17);
+    }
+
+    #[test]
+    fn a_0_9_0_database_gains_the_studio_tables_and_keeps_its_versions() {
+        // 0.9.0 发出去的库是 v2:里面可能已经有预研页建的版本
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(V1).unwrap();
+        conn.execute_batch(V2).unwrap();
+        conn.execute_batch("PRAGMA user_version = 2;").unwrap();
+        conn.execute(
+            "INSERT INTO assets(id, kind, role, rel_path, ext, bytes, created_at) VALUES ('a1', 'model3d', 'cad_mesh', 'assets/lab/a1.stl', 'stl', 1, 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO cad_versions(id, source, code, metrics_json, stl_asset_id, created_at) VALUES ('v1', 'manual', 'result = 1', '{}', 'a1', 0)",
+            [],
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        let ver: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(ver, SCHEMA_VERSION);
+        let design_id: Option<String> = conn.query_row("SELECT design_id FROM cad_versions WHERE id = 'v1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(design_id, None, "旧版本留着,只是不属于任何设计");
+        for table in ["cad_designs", "cad_messages"] {
+            let n: i64 = conn
+                .query_row("SELECT COUNT(*) FROM sqlite_master WHERE name = ?1", [table], |r| r.get(0))
+                .unwrap();
+            assert_eq!(n, 1, "{table}");
+        }
     }
 
     #[test]

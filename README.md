@@ -21,6 +21,7 @@
 | [08 · 市场与竞品调研](docs/08-market-research.md) | 市场数据、卖家痛点、竞品与缺口（带来源） |
 | [ADR-0001 · 技术栈](docs/adr/0001-tech-stack.md) | 为什么是 Rust + Tauri + Leptos，从 velo 照搬什么 |
 | [ADR-0002 · 渠道策略](docs/adr/0002-channel-strategy.md) | 为什么「半自动发布」是正式形态、红线是什么 |
+| [ADR-0004 · 建模工作室](docs/adr/0004-modeling-studio.md) | 为什么建模是一级入口、「设计」是什么、对话式修改怎么工作（意图判断、上下文、贴图、分叉与撤销） |
 | [ADR-0003 · 代码式 CAD](docs/adr/0003-code-cad-build123d.md) | 为什么 3D 主路线是「看图 → build123d 脚本」、质量靠什么、怎么局部修改、怎么安全地执行模型写的代码、引擎怎么分发、实测数字 |
 
 建议阅读顺序：00 → 01 → ADR-0001 / 0002 → 06，其余按需查。
@@ -42,7 +43,7 @@ cargo tauri build --bundles nsis  # 打包 Windows 安装包（target/release/bu
 & "$env:LOCALAPPDATAi.printpilot\cad-engineenv\Scripts\python.exe" -X utf8 -m unittest discover -s crates\pp-cad\py
 ```
 
-没装引擎不影响其它功能，需要引擎的 Rust 测试会自动跳过。**最终用户不需要 Python**：正式版的安装包里自带引擎（一个约 224 MB 的压缩文件，由 `scripts/build-engine-pack.py` 构建），应用第一次用到时自己解开，不联网（ADR-0003「引擎的分发」）。想不填密钥先看效果：「设置 → 演示模式」打开后，「预研 → 代码建模」会用内置脚本在真引擎上走一遍完整流程。
+没装引擎不影响其它功能，需要引擎的 Rust 测试会自动跳过。**最终用户不需要 Python**：正式版的安装包里自带引擎（一个约 224 MB 的压缩文件，由 `scripts/build-engine-pack.py` 构建），应用第一次用到时自己解开，不联网（ADR-0003「引擎的分发」）。想不填密钥先看效果：「设置 → 演示模式」打开后，侧栏「建模」里新建一个设计、说一句话，就能用内置脚本在真引擎上把「出规格 → 生成 → 对话修改 → 改参数」完整走一遍。
 
 环境要求：Rust stable、`wasm32-unknown-unknown` target、trunk 0.21、tauri-cli 2.x。**不需要 Node**——只有升级 three.js 时才在 `viewer3d/` 里跑一次 `pnpm install && pnpm build`，产物 `public/viewer3d/three-bundle.mjs` 是提交入库的。
 

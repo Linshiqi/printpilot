@@ -24,7 +24,7 @@ use crate::json::ask_json;
 use crate::AgentError;
 
 const SPEC_PROMPT: &str = include_str!("../prompts/cad_spec.md");
-const CODE_PROMPT: &str = include_str!("../prompts/cad_code.md");
+pub(crate) const CODE_PROMPT: &str = include_str!("../prompts/cad_code.md");
 const EDIT_PROMPT: &str = include_str!("../prompts/cad_edit.md");
 const REVIEW_PROMPT: &str = include_str!("../prompts/cad_review.md");
 
@@ -249,7 +249,7 @@ async fn evaluate(
 }
 
 /// 问一次;空内容之类的坏响应再问一次(DeepSeek 文档明说偶尔会这样)。
-async fn chat(llm: &dyn LlmProvider, req: &ChatRequest, calls: &mut u32) -> Result<ChatResponse, ProviderError> {
+pub(crate) async fn chat_once(llm: &dyn LlmProvider, req: &ChatRequest, calls: &mut u32) -> Result<ChatResponse, ProviderError> {
     *calls += 1;
     match llm.chat(req.clone()).await {
         Err(ProviderError::BadResponse(why)) => {
@@ -261,13 +261,22 @@ async fn chat(llm: &dyn LlmProvider, req: &ChatRequest, calls: &mut u32) -> Resu
     }
 }
 
+/// 调用方已经拿到手的第一版回答(对话式建模:同一次调用既判断意图又出代码,不该为了进循环再问一遍)。
+pub(crate) struct FirstAnswer {
+    pub response: ChatResponse,
+    /// 为了拿到它调了几次模型
+    pub calls: u32,
+}
+
 /// 写代码 → 执行 → 检查 → 把问题喂回去,直到合格或次数用完。`original` 有值 = 指令修补。
-async fn build_loop(
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn build_loop(
     llm: &dyn LlmProvider,
     exec: &dyn CadExecutor,
     mut messages: Vec<ChatMessage>,
     spec: Option<&DesignSpec>,
     original: Option<&str>,
+    mut first: Option<FirstAnswer>,
     cfg: &CadConfig,
     on_progress: &(dyn Fn(CadProgress) + Send + Sync),
 ) -> Result<CadBuild, AgentError> {
@@ -278,18 +287,26 @@ async fn build_loop(
     let mut last_code = original.unwrap_or_default().to_string();
 
     for attempt in 1..=cfg.max_repairs + 1 {
-        on_progress(CadProgress::WritingCode { attempt });
-        let req = ChatRequest::new(&cfg.code_model, messages.clone())
-            .thinking(cfg.code_thinking)
-            .max_tokens(cfg.code_max_tokens);
-        let answer = match chat(llm, &req, &mut report.llm_calls).await {
-            Ok(a) => a,
-            // 已经有一版能用的了:限流、断网这类中途故障不该让前面的成果作废
-            Err(e) if !candidates.is_empty() => {
-                log::warn!("[cad] 第 {attempt} 版没拿到回答({e}),交付之前的版本");
-                break;
+        let answer = match first.take() {
+            Some(f) => {
+                report.llm_calls += f.calls;
+                f.response
             }
-            Err(e) => return Err(e.into()),
+            None => {
+                on_progress(CadProgress::WritingCode { attempt });
+                let req = ChatRequest::new(&cfg.code_model, messages.clone())
+                    .thinking(cfg.code_thinking)
+                    .max_tokens(cfg.code_max_tokens);
+                match chat_once(llm, &req, &mut report.llm_calls).await {
+                    Ok(a) => a,
+                    // 已经有一版能用的了:限流、断网这类中途故障不该让前面的成果作废
+                    Err(e) if !candidates.is_empty() => {
+                        log::warn!("[cad] 第 {attempt} 版没拿到回答({e}),交付之前的版本");
+                        break;
+                    }
+                    Err(e) => return Err(e.into()),
+                }
+            }
         };
         usage.add(answer.usage);
         let code = extract_code(&answer.content);
@@ -478,7 +495,7 @@ pub async fn generate_model(
         return Err(AgentError::InvalidOutput("设计规格里没有任何特征".into()));
     }
     let messages = vec![ChatMessage::system(CODE_PROMPT), ChatMessage::user(spec_block(spec, cfg.build_mm))];
-    build_loop(llm, exec, messages, Some(spec), None, cfg, on_progress).await
+    build_loop(llm, exec, messages, Some(spec), None, None, cfg, on_progress).await
 }
 
 // ---------------------------------------------------------------- 3. 指令修补(局部修改)
@@ -515,7 +532,7 @@ pub async fn edit_model(
     }
     let system = format!("{EDIT_PROMPT}\n---\n\n{CODE_PROMPT}");
     let messages = vec![ChatMessage::system(system), ChatMessage::user(user)];
-    build_loop(llm, exec, messages, None, Some(code), cfg, on_progress).await
+    build_loop(llm, exec, messages, None, Some(code), None, cfg, on_progress).await
 }
 
 // ---------------------------------------------------------------- 4. 看图复核

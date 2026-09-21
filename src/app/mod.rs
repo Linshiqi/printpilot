@@ -14,6 +14,7 @@ use crate::theme::{apply_theme, get_pref, set_pref};
 use crate::ui::Toasts;
 use crate::view::board::BoardView;
 use crate::view::lab::LabView;
+use crate::view::studio::StudioView;
 use crate::view::placeholder::ComingSoon;
 use crate::view::project_drawer::ProjectDrawer;
 use crate::view::settings::SettingsView;
@@ -152,6 +153,7 @@ pub fn App() -> impl IntoView {
                 {move || match state.route.get() {
                     Route::Projects => view! { <BoardView state=state/> }.into_any(),
                     Route::Lab => view! { <LabView state=state/> }.into_any(),
+                    Route::Studio => view! { <StudioView state=state/> }.into_any(),
                     Route::Settings => view! { <SettingsView state=state/> }.into_any(),
                     Route::Dashboard => view! {
                         <ComingSoon icon=IconKind::Dashboard title=move || t_string!(i18n, nav.dashboard)/>

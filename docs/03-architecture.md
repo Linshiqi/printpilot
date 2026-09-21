@@ -272,6 +272,8 @@ flowchart LR
 ```
 
 - 流水线在 `pp-agent::cad`（有界：第一版 + 最多 3 轮修复）；执行器通过 `CadExecutor` trait 注入，测试里用假的。
+- **对话式修改**在 `pp-agent::chat`（[ADR-0004](adr/0004-modeling-studio.md)）：一次模型调用同时完成「判断意图」和「干活」——回答里有 ```python 围栏 = 改了模型，接进上面的「执行 → 检查 → 修」循环（第一版回答不重问）；没有 = 回答或反问。当前脚本永远随消息给；历史只给文字、只留最近 12 句；中途贴的图先由视觉模型描述成文字。
+- 面向用户的命令在 `src-tauri/src/command/design.rs`（设计、对话、时间线）；`command/cad.rs` 只剩引擎这一侧（常驻执行器、入库、参考图处理、演示脚本、导出）。一轮对话要么整轮入库，要么什么都不留。
 - 检查结果是带类型的 `CadProblem`：喂给模型用英文的 `for_model()`，给用户看由前端按 `kind` 本地化。
 - 提示词里的 build123d 速查表与完整示例**逐条在真引擎上跑**（`crates/pp-cad/py/test_cheatsheet.py`）。
 - 安全、引擎分发、实测数字见 ADR-0003。
@@ -362,6 +364,7 @@ erDiagram
 | `assets` | `kind`(image/model3d/doc/photo/video/pack) · `role`(concept_ref/concept_scene/cover/real_photo/model_raw/model_edited/print_file…) · `rel_path` · `meta_json` · `parent_asset_id` · `source_job_id` · `ai_generated` · `is_adopted` | **血缘**：图 → 模型 → 打印文件 → 封面全链路可追溯；`ai_generated` 驱动 AIGC 标识与发布提醒 |
 | `jobs` | `type` · `provider` · `provider_task_id` · `status` · `input_json` · `output_json` · `error_code` · `attempts` · `run_after` · `dedupe_key` · `est_cost` · `cost` | 调度器直接读写这张表 |
 | `cad_versions`（schema v2） | `parent_id` · `source`(manual/generate/param/edit) · `note` · `code` · `spec_json` · `ref_asset_ids_json` · `report_json` · `params_json` · `metrics_json` · `stl_asset_id` · `step_asset_id` | 代码式 CAD 的版本树：每次生成、改参数、指令修补、手写运行都是一个新版本；规格与参考图由子版本沿用（复核要用） |
+| `cad_designs` · `cad_messages`（schema v3） | 设计：`name` · `project_id` · `spec_json` · `ref_asset_ids_json` · `current_version_id` · `thumb`；消息：`role`(user/assistant/event) · `kind`(text/spec/build/failed/review/param/manual) · `content` · `extra_json` · `image_asset_ids_json` · `version_id` | 建模工作室：一个设计 = 一个零件的一条建模线索；对话与「改参数 / 手改代码」事件在同一条时间线上；`cad_versions.design_id` 把版本归到设计名下 |
 | `cost_entries` | `category`(llm/search/image/model3d/material/shipping/fee…) · `amount` · `job_id` | 费用账本 → 项目 P&L |
 | `printers` / `materials` | 成型尺寸 · 功率 · 购入价 · 寿命小时 · 实测每小时出料克数 / 类型 · 颜色 · 元每公斤 · 库存克数 | 成本模型与产能估算的基础数据 |
 | `print_runs` | `est_minutes/grams` · `actual_minutes/grams` · `result` · `fail_reason` · `order_item_id?` | 打样与生产共用；失败率反哺成本，实际值反哺估算 |

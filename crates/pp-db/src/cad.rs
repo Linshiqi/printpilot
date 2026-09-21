@@ -6,10 +6,11 @@ use rusqlite::{params, OptionalExtension, Row};
 use crate::{new_id, now_ms, Db, DbError, DbResult};
 
 const COLS: &str = "id, project_id, parent_id, source, note, code, params_json, metrics_json, \
-                    stl_asset_id, step_asset_id, elapsed_ms, created_at, spec_json, ref_asset_ids_json, report_json";
+                    stl_asset_id, step_asset_id, elapsed_ms, created_at, spec_json, ref_asset_ids_json, report_json, design_id";
 
 #[derive(Debug, Clone)]
 pub struct NewCadVersion {
+    pub design_id: Option<String>,
     pub project_id: Option<String>,
     pub parent_id: Option<String>,
     pub source: String,
@@ -33,6 +34,7 @@ fn row_to_version(r: &Row<'_>) -> rusqlite::Result<CadVersion> {
     let report_json: Option<String> = r.get(14)?;
     Ok(CadVersion {
         id: r.get(0)?,
+        design_id: r.get(15)?,
         project_id: r.get(1)?,
         parent_id: r.get(2)?,
         source: r.get(3)?,
@@ -57,7 +59,7 @@ impl Db {
         let json = |e: serde_json::Error| DbError::Invalid(format!("cad json: {e}"));
         self.w().execute(
             &format!(
-                "INSERT INTO cad_versions({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)"
+                "INSERT INTO cad_versions({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)"
             ),
             params![
                 id,
@@ -74,7 +76,8 @@ impl Db {
                 now_ms(),
                 v.spec.as_ref().map(serde_json::to_string).transpose().map_err(json)?,
                 serde_json::to_string(&v.ref_asset_ids).map_err(json)?,
-                v.report.as_ref().map(serde_json::to_string).transpose().map_err(json)?
+                v.report.as_ref().map(serde_json::to_string).transpose().map_err(json)?,
+                v.design_id
             ],
         )?;
         self.get_cad_version(&id)
@@ -100,6 +103,16 @@ impl Db {
              ORDER BY created_at DESC, id DESC"
         ))?;
         let rows = stmt.query_map(params![project_id], row_to_version)?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// 一个设计名下的全部版本,最新的在前。
+    pub fn list_design_versions(&self, design_id: &str) -> DbResult<Vec<CadVersion>> {
+        let conn = self.r();
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {COLS} FROM cad_versions WHERE deleted_at IS NULL AND design_id = ?1 ORDER BY created_at DESC, id DESC"
+        ))?;
+        let rows = stmt.query_map([design_id], row_to_version)?;
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
@@ -130,6 +143,7 @@ mod tests {
     fn version(t: &TempDb, parent: Option<&str>, source: &str) -> CadVersion {
         let stl = asset(t, &new_id());
         t.insert_cad_version(&NewCadVersion {
+            design_id: None,
             project_id: None,
             parent_id: parent.map(str::to_string),
             source: source.into(),
@@ -202,6 +216,7 @@ mod tests {
     fn a_version_must_point_at_a_real_mesh_asset() {
         let t = TempDb::new();
         let mut bad = NewCadVersion {
+            design_id: None,
             project_id: None,
             parent_id: None,
             source: "manual".into(),

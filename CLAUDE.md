@@ -92,9 +92,15 @@ cargo tauri build --bundles nsis                  # 本机出 Windows 安装包(
 
 见 `docs/03-architecture.md` §4。依赖方向：`src-tauri → pp-core → (pp-db, pp-providers, pp-agent, pp-channels, pp-geometry, pp-cad)`；所有 crate 可依赖 `pp-common`；前端只依赖 `pp-common`（不开 `backend` feature）。
 
-## 代码建模（build123d）
+## 代码建模（build123d）与建模工作室
 
-设计与实测见 `docs/adr/0003-code-cad-build123d.md`，流水线图见 `docs/03-architecture.md` §8.0。动这块代码之前要知道的：
+设计与实测见 `docs/adr/0003-code-cad-build123d.md`（引擎、沙箱、流水线）和 `docs/adr/0004-modeling-studio.md`（一级入口、设计、对话式修改），流水线图见 `docs/03-architecture.md` §8.0。动这块代码之前要知道的：
+
+- **建模是一级入口**（`Route::Studio`，`src/view/studio/`），不要再往「预研」里塞。核心实体是**设计**（`cad_designs`）：参考图 + 规格 + 对话时间线（`cad_messages`）+ 版本树。
+- **对话的意图判断和干活是同一次模型调用**（`pp-agent::chat`）：有 ```python 围栏 = 改模型，没有 = 回答 / 反问。别加「先分类再执行」的第二次调用。
+- **一轮对话要么整轮入库，要么什么都不留**（`command/design.rs::design_send`）：先调模型、后写库；失败时输入框里的话原样留着。
+- 撤销和分叉靠版本树（选回 `base_version_id`），不删任何东西。
+- 3D 视图的容器必须在组件创建时就在 DOM 里：不要把它放进 `<Show>` 分支（挂载的 Effect 只跑一次，容器晚出现就挂不上）。无内容时用覆盖层。
 
 - **分层**：`pp-cad` 管「执行一段代码」（引擎定位、沙箱、常驻进程 `Worker`、参数解析与改写、代码契约）；`pp-agent::cad` 管「和模型来回」（出规格、生成、修复循环、指令修补、复核），通过 `CadExecutor` trait 拿执行能力，所以流水线测试不需要引擎；`src-tauri/src/command/cad.rs` 提供真执行器、入库、演示脚本。
 - **代码契约**：`# ---- PARAMS ----`（每行 `名字 = 数值  # 单位 | 说明 | [最小, 最大]`）、每个特征一段 `# ---- FEATURE: name ----`、最终形体赋给 `result`。参数面板、改动段比对、局部修改都建立在它上面。

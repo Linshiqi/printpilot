@@ -4,6 +4,7 @@
 
 pub mod asset;
 pub mod cad;
+pub mod design;
 pub mod errcode;
 pub mod mesh;
 pub mod project;

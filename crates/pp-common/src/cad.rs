@@ -240,6 +240,9 @@ pub struct CadEngineInfo {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CadVersion {
     pub id: String,
+    /// 属于哪个设计(建模工作室)。0.9.0 在预研页里建的版本没有
+    #[serde(default)]
+    pub design_id: Option<String>,
     #[serde(default)]
     pub project_id: Option<String>,
     #[serde(default)]
@@ -269,37 +272,12 @@ pub struct CadVersion {
     pub created_at: i64,
 }
 
-/// 「看图出规格」的结果:规格 + 入了库的参考图 + 花费。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct CadSpecResult {
-    pub spec: DesignSpec,
-    pub ref_asset_ids: Vec<String>,
-    pub report: CadBuildReport,
-}
-
-/// 「看图复核」的结果。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct CadReviewResult {
-    pub review: CadReview,
-    pub report: CadBuildReport,
-}
-
 /// 用户在 3D 视图里点中的位置(毫米,模型坐标系:Z 朝上)。指令修补时帮模型判断「说的是哪个特征」。
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct CadPick {
     pub point: [f64; 3],
     #[serde(default)]
     pub normal: Option<[f64; 3]>,
-}
-
-/// 「生成 / 指令修补」的结果。`version = None` 表示没有任何一版能跑:
-/// 这时 `code` 是最后一版代码、`report.rounds` 里是每一轮的报错——用户可以接着手改,而不是只看到一句「失败」。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct CadBuildResult {
-    #[serde(default)]
-    pub version: Option<CadVersion>,
-    pub code: String,
-    pub report: CadBuildReport,
 }
 
 #[cfg(test)]
