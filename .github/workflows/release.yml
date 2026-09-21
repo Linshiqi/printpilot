@@ -145,9 +145,15 @@ jobs:
         with:
           tool: cargo-binstall
 
+      # 两个都有预编译的二进制,正常几秒钟装完。v0.9.6 的发版挂在这一步(macOS):
+      # - 不带令牌时 binstall 查 GitHub Release 会被限流(托管 runner 共用出口),查不到就退回「从源码编译」;
+      # - 从源码编译时不带 --locked 会解析到上游**最新**的依赖,其中一个小版本给结构体加了字段,
+      #   tauri-cli 2.10.1 就编不过了(E0063)。--locked 让它用 crate 自带的 Cargo.lock。
       - name: Install trunk and the Tauri CLI
         shell: bash
-        run: cargo binstall --no-confirm --force trunk@${{ env.TRUNK_VERSION }} tauri-cli@${{ env.TAURI_CLI_VERSION }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: cargo binstall --no-confirm --force --locked trunk@${{ env.TRUNK_VERSION }} tauri-cli@${{ env.TAURI_CLI_VERSION }}
 
       - name: Build the installer
         shell: bash

@@ -1,6 +1,6 @@
 [package]
 name = "printpilot"
-version = "0.9.6"
+version = "0.9.7"
 description = "PrintPilot — 3D 打印爆品工作台"
 edition = "2021"
 
