@@ -11,6 +11,7 @@
 mod badge;
 mod button;
 mod card;
+pub mod context_menu;
 mod dialog;
 mod empty;
 mod field;
@@ -20,6 +21,7 @@ mod toast;
 pub use badge::{Badge, Tone};
 pub use button::{Button, ButtonVariant, IconButton};
 pub use card::{Card, SectionTitle};
+pub use context_menu::{basics, copy_entry, image_entries, item, separator, toggle, ContextMenu, ContextMenuHost};
 pub use dialog::{Dialog, DialogFooter, Drawer};
 pub use empty::EmptyState;
 pub use field::{Field, NumInput, TextArea, TextInput, Toggle};

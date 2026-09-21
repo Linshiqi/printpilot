@@ -378,6 +378,12 @@ export function snapshot(containerId) {
   return view.renderer.domElement.toDataURL('image/png');
 }
 
+/** 镜头回到默认的等轴测视角,并把模型框满(右键菜单的「复位视角」)。 */
+export function resetView(containerId) {
+  const view = views.get(containerId);
+  if (view && view.model) frame(view);
+}
+
 export function setEdges(containerId, enabled) {
   const view = views.get(containerId);
   if (!view) return;

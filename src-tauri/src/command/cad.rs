@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use pp_agent::{AgentError, CadConfig, CadExecutor, CadProgress};
-use pp_cad::{engine_info, parse_params, CadError, Engine, RunOptions, RunOutput, Worker};
+use pp_cad::{engine_info, parse_params, CadError, Engine, RunOptions, RunOutput};
 use pp_common::cad::{CadBuildReport, CadEngineInfo, CadMetrics, CadVersion, DesignSpec};
 use pp_common::{errcode, Asset, AssetKind};
 use pp_db::{NewAsset, NewCadVersion};
@@ -38,9 +38,9 @@ const MAX_RENDER_IMAGES: usize = 6;
 const REFERENCE_MAX_SIDE: u32 = 1536;
 const MAX_CODE_BYTES: usize = 200_000;
 /// 一个常驻引擎进程最多跑多少个任务就换新的(OpenCascade 长跑会涨内存)
-const WORKER_MAX_JOBS: u32 = 40;
+pub(crate) const WORKER_MAX_JOBS: u32 = 40;
 /// 等常驻进程就绪的上限:冷盘上 import build123d 可能要十几秒
-const WORKER_READY_TIMEOUT: Duration = Duration::from_secs(90);
+pub(crate) const WORKER_READY_TIMEOUT: Duration = Duration::from_secs(90);
 
 pub(crate) fn cad_err(e: CadError) -> String {
     errcode::err(e.code(), e)
@@ -140,8 +140,8 @@ pub(crate) fn emitter(app: &AppHandle) -> impl Fn(CadProgress) + Send + Sync {
 
 // ---------------------------------------------------------------- 引擎执行器
 
-/// 建模用的临时目录都在这下面(每次命令一个子目录、常驻进程一个沙箱)。
-fn scratch_root() -> PathBuf {
+/// 建模用的临时目录都在这下面(每次命令一个子目录、每个常驻进程一个沙箱)。
+pub(crate) fn scratch_root() -> PathBuf {
     std::env::temp_dir().join("printpilot-cad")
 }
 
@@ -174,44 +174,6 @@ impl Drop for Session {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.dir);
     }
-}
-
-fn worker_sandbox() -> PathBuf {
-    scratch_root().join(format!("worker-{}", pp_db::new_id()))
-}
-
-/// 确保有一个可用的常驻进程(没有就起一个)。起不来返回 `None`,调用方退回冷启动。
-fn ensure_worker(slot: &mut Option<Worker>, engine: &Engine) -> bool {
-    if slot.as_ref().is_some_and(|w| w.served() >= WORKER_MAX_JOBS) {
-        *slot = None;
-    }
-    if slot.is_none() {
-        let started = Instant::now();
-        match Worker::spawn(engine, &worker_sandbox(), WORKER_READY_TIMEOUT) {
-            Ok(w) => {
-                log::info!("[cad] 常驻引擎就绪 · build123d {} · {}ms", w.build123d_version, started.elapsed().as_millis());
-                *slot = Some(w);
-            }
-            Err(e) => log::warn!("[cad] 常驻引擎起不来,退回单次执行:{e}"),
-        }
-    }
-    slot.is_some()
-}
-
-/// 优先在常驻进程里执行(几十毫秒);常驻进程起不来就退回冷启动(约 4 秒)。
-fn run_code(ctx: &AppCtx, engine: &Engine, code: &str, dir: &Path, opts: &RunOptions) -> Result<RunOutput, CadError> {
-    let mut slot = ctx.cad_worker.lock().unwrap_or_else(|e| e.into_inner());
-    if !ensure_worker(&mut slot, engine) {
-        drop(slot);
-        return pp_cad::run(engine, code, dir, opts);
-    }
-    let mut worker = slot.take().expect("ensure_worker said there is one");
-    let result = worker.run(code, dir, opts);
-    // 脚本自己的错误不影响进程;超时 / 协议错误之后进程已经被杀,丢掉,下次再起
-    if matches!(result, Ok(_) | Err(CadError::Script(_))) {
-        *slot = Some(worker);
-    }
-    result
 }
 
 /// 真引擎执行器。流水线交付的不一定是最后一次执行的那版(它挑问题最少的),所以每次成功的产物都按代码留着。
@@ -252,7 +214,8 @@ impl CadExecutor for EngineExecutor {
         let n = self.counter.fetch_add(1, Ordering::Relaxed);
         let dir = self.session.dir.join(format!("run-{n}"));
         let (ctx, engine, opts, owned) = (self.ctx.clone(), self.engine.clone(), self.opts.clone(), code.to_string());
-        let output = tauri::async_runtime::spawn_blocking(move || run_code(&ctx, &engine, &owned, &dir, &opts))
+        // 常驻进程里执行(几十毫秒);它被杀 / 跑满任务数之后由槽位在后台换新(pp_cad::pool)
+        let output = tauri::async_runtime::spawn_blocking(move || ctx.cad_pool.run(&engine, &owned, &dir, &opts))
             .await
             .map_err(|e| CadError::Protocol(format!("engine task failed: {e}")))??;
         let metrics = output.metrics.clone();
@@ -569,21 +532,18 @@ pub async fn cad_engine_info(app: AppHandle, ctx: State<'_, Arc<AppCtx>>) -> Res
         };
         // 探测引擎本来就要起一次解释器、import 一次 build123d(几秒):干脆起成常驻进程,
         // 版本号从它的就绪行里拿——面板打开之后,第一次建模就是热的。
-        let mut slot = ctx.cad_worker.lock().unwrap_or_else(|e| e.into_inner());
-        if !ensure_worker(&mut slot, &engine) {
-            drop(slot);
+        let Some(worker) = ctx.cad_pool.warm(&engine) else {
             // 冷探测一次,把起不来的真实原因带回去
             return CadEngineInfo {
                 bundled,
                 ..engine_info(&ctx.data_root)
             };
-        }
-        let worker = slot.as_ref().expect("ensure_worker said there is one");
+        };
         CadEngineInfo {
             available: true,
             python: engine.python.display().to_string(),
-            python_version: worker.python_version.clone(),
-            build123d_version: worker.build123d_version.clone(),
+            python_version: worker.python_version,
+            build123d_version: worker.build123d_version,
             bundled,
             ..Default::default()
         }
@@ -602,8 +562,8 @@ pub async fn cad_engine_install(app: AppHandle, ctx: State<'_, Arc<AppCtx>>) -> 
         let Some((archive, manifest)) = pack_to_install(&app, &ctx) else {
             return Ok(()); // 已经是这个版本了(或者这个构建根本不带引擎包)
         };
-        // 正在运行的解释器在 Windows 上删不掉:先让常驻进程退出
-        *ctx.cad_worker.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        // 正在运行的解释器在 Windows 上删不掉:先让常驻进程退出,装完之前也不许后台再起新的
+        let _no_worker = ctx.cad_pool.pause();
         let started = Instant::now();
         let root = ctx.data_root.join("cad-engine");
         let emit = {

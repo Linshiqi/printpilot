@@ -33,6 +33,23 @@
     "yes": "Yes",
     "no": "No"
   },
+  "menu": {
+    "cut": "Cut",
+    "copy": "Copy",
+    "paste": "Paste",
+    "select_all": "Select all",
+    "copy_image": "Copy image",
+    "image_copied": "Image copied — paste it anywhere",
+    "open_external": "Open with default app",
+    "copied": "Copied",
+    "open": "Open",
+    "rename": "Rename",
+    "delete": "Delete",
+    "copy_text": "Copy this message",
+    "copy_code": "Copy code",
+    "copy_name": "Copy name",
+    "copy_prompt": "Copy prompt"
+  },
   "stage": {
     "idea": "Idea",
     "research": "Research",
@@ -50,6 +67,8 @@
     "done": "Done"
   },
   "board": {
+    "menu_open": "Open project",
+    "menu_last_stage": "Already at the last stage",
     "title": "Project board",
     "subtitle": "One card = one product. Drag a card to move it forward.",
     "new_project": "New project",
@@ -346,6 +365,11 @@
     "p_solids": "The model consists of {{ count }} disconnected solids",
     "p_no_volume": "The model has no volume",
     "p_invalid": "Invalid geometry (self-intersection or degenerate faces)",
+    "bed_contact": "Bed contact",
+    "note_no_flat_base": "No flat base: the part rests on an edge, a point or a curved surface and cannot be printed as is — flatten the bottom, or add supports in the slicer",
+    "note_small_contact": "Only {{ area }} mm² touches the bed ({{ percent }}% of the footprint): the first layer may not stick — add a brim in the slicer",
+    "note_overhang": "{{ area }} cm² of flat downward-facing overhang: short spans can bridge, long ones need supports",
+    "p_no_flat_base": "No flat base (rests on an edge / point / curved surface): not printable with FDM",
     "p_off_plate": "Not sitting on the build plate (lowest z = {{ z }})",
     "p_size": "Size differs from the spec: got {{ got }}, spec {{ want }}",
     "p_too_big": "Exceeds the build volume: {{ size }} mm",
@@ -354,6 +378,7 @@
     "p_unchanged": "The model returned the script unchanged"
   },
   "research": {
+    "menu_copy_topic": "Copy research topic",
     "title": "Research",
     "subtitle": "Find out whether it is worth making: demand, competitors, price band, risks. Adopt a good opportunity as a project, or research for an existing one.",
     "for_project": "Research for which project",
@@ -361,6 +386,8 @@
     "history": "Past research"
   },
   "imagery": {
+    "menu_select": "Make this the current image",
+    "menu_export": "Export…",
     "title": "Images",
     "subtitle": "Generate and refine images with AI, one message at a time. The selected image is the current one: what you say next edits it.",
     "purpose": "Purpose",
@@ -405,6 +432,12 @@
     "compliance_note": "Use AI images for post illustrations and non-first listing images only: Xiaohongshu requires the first product image to be a real front-view photo, and AI content must be declared when publishing."
   },
   "studio": {
+    "menu_show_code": "Show code",
+    "menu_open_slicer": "Open in slicer",
+    "menu_reset_view": "Reset view",
+    "menu_export": "Export {{ format }}…",
+    "menu_use_version": "Switch to this version",
+    "menu_remove_ref": "Remove this reference",
     "title": "Modeling",
     "subtitle": "From an image or a sentence to a parametric 3D model — then refine it with AI, one message at a time.",
     "new_design": "New design",
@@ -454,6 +487,9 @@
     "live_code": "Writing code · {{ n }} lines so far"
   },
   "pricing": {
+    "menu_open_model": "Open cost model",
+    "menu_copy_note": "Copy reason and note",
+    "menu_delete_run": "Delete this print run",
     "title": "Prototype & pricing",
     "subtitle": "Know before listing: what to charge, what you earn, and how many orders a day you can take. Change any number and the right side recalculates at once.",
     "autosaved": "Saved automatically",

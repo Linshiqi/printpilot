@@ -59,6 +59,9 @@ Rust + Tauri 2 + Leptos 0.7（CSR）+ Trunk 0.21 + Tailwind v4 + leptos_i18n 0.5
 - Windows 上子进程刚被杀的那一瞬间，它的工作目录可能还删不掉——`remove_dir_all` 要带几次短重试。
 - **别在 bash heredoc 里写带反斜杠转义的 Python 字符串**（`
 `、`\d`）：到 Python 手里已经被吃掉一层，写出去的文件里变成真换行。改这类内容用编辑工具，或者用 `chr(10)` / `chr(92)` 拼。
+- **用 Python 脚本打补丁时,读写都要带 `newline=""`**:Windows 上文本模式默认把 `\n` 写成 `\r\n`,一个只改三行的补丁会让 `git diff` 变成整个文件(仓库里的文件是 LF)。补丁脚本用编辑工具写到 `target/` 下、跑完删掉。
+- **build123d 0.12 的几个性能坑(实测,见 ADR-0003「性能与质量复查」)**:默认的精确包围盒在环面 / 样条面上每个面 20 多毫秒(带圆角的零件一次 150~190 ms);`export_stl` 用的是**相对**偏差(小孔过度细分、大曲面没有误差上限);`x.is_valid` 是属性,`callable(getattr(x, "is_valid"))` 这种兼容写法会把整遍检查跑两次;循环里做布尔比一次减一批慢 25 倍。执行器里量东西 / 导出之前先想想这几条。
+- **事件回调里不能 `expect_context` / `use_context`**：回调执行时没有响应式上下文，会直接 panic（`expected context of type … to be present`），整个界面跟着死。要用的东西（`AppState`、i18n）在**组件体里**取好，`Copy` 进闭包。右键菜单的回调踩过。
 - **两个互相镜像的 `Effect` 必须「值不一样才写」**：Leptos 的 `set` 不管值变没变都会通知订阅者。`A 变了 → 写 B`、`B 变了 → 写 A` 这一对如果无条件地写，就是一个死循环——界面线程被占满，窗口卡死，连 DevTools（`cdp.py`）都连不上（表现为 `Runtime.enable` 超时）。项目抽屉的开关同步（`project_drawer.rs`）踩过。
 - **`on:blur` 里读信号要用 `try_` 系列**（`try_get_untracked` / `try_set`）：对话框或页面关掉时，正聚焦的输入框会在被移除的瞬间收到 `blur`，而那时它的信号已经随作用域销毁了——直接 `get` 会 panic（`…has already been disposed`）。`NumInput` 和两处重命名输入框踩过。同理：`For` 的 `key` 要包含**会变的显示内容**，键没变的行不会重画（三档建议价曾因此显示旧毛利）。
 
@@ -74,7 +77,7 @@ py scripts/cdp.py shot out.png                    # 截图;另有 eval / eval-to
 python scripts/build-engine-pack.py               # 造随安装包走的引擎包(要先 pip install zstandard;产物在 src-tauri/resources/cad-engine/,不入库)
 cargo tauri build --bundles nsis                  # 本机出 Windows 安装包(目录里有引擎包就会带上)
 # 执行器与提示词速查表的 Python 单测——用引擎自己的解释器跑:
-& "$env:LOCALAPPDATAi.printpilot\cad-engineenv\Scripts\python.exe" -X utf8 -m unittest discover -s crates\pp-cad\py
+& "$env:LOCALAPPDATA\ai.printpilot\cad-engine\venv\Scripts\python.exe" -X utf8 -m unittest discover -s crates\pp-cad\py
 ```
 
 **端口约定**:本机有多个 Tauri 工程,**不要用 Tauri 模板默认的 1420,也不要用它附近的端口**(单测会卡 1400~1500)。
@@ -94,6 +97,16 @@ cargo tauri build --bundles nsis                  # 本机出 Windows 安装包(
 
 见 `docs/03-architecture.md` §4。依赖方向：`src-tauri → pp-core → (pp-db, pp-providers, pp-agent, pp-channels, pp-geometry, pp-cad)`；所有 crate 可依赖 `pp-common`；前端只依赖 `pp-common`（不开 `backend` feature）。
 
+## 右键菜单
+
+设计与取舍见 `docs/adr/0008-context-menus.md`，代码在 `src/ui/context_menu.rs`。
+
+- 浏览器自带的右键菜单被全局拦掉了（`context_menu::install`）。输入框、图片、选中的文字有通用菜单，不用管。
+- **新增一种可以右键的对象**（列表行、卡片…）：元素上写 `on:contextmenu=move |ev| state.open_menu(&ev, vec![item(…), separator(), item(…).danger()])`。文案用 `td_string!(current_locale(), …)`（回调里没有 i18n 上下文）；菜单里**只放界面上已经有的操作**；做不了的用 `.disabled_if(..)` 置灰，不要不列；破坏性的放最后、`.danger()`、照样走确认框。
+- 元素里面有图片或可选中的文字时，菜单开头接上 `basics(state, &ev)`（「复制」选中的文字 / 图片的那几项）——具体元素的菜单会拦住事件，全局兜底看不到这次右键。
+- 操作要能**对指定的对象**做，而不是「对当前打开的那个」：右键的那一行未必是打开着的。参考建模页的 `delete_target` / `rename_pending`。
+- 验证用 `py scripts/cdp.py rclick <x> <y>`（真实右键）+ `click`：剪切 / 复制需要用户手势，合成事件测不出来。
+
 ## 代码建模（build123d）与建模工作室
 
 设计与实测见 `docs/adr/0003-code-cad-build123d.md`（引擎、沙箱、流水线）和 `docs/adr/0004-modeling-studio.md`（一级入口、设计、对话式修改），流水线图见 `docs/03-architecture.md` §8.0。动这块代码之前要知道的：
@@ -103,10 +116,10 @@ cargo tauri build --bundles nsis                  # 本机出 Windows 安装包(
 - **一轮对话要么整轮入库，要么什么都不留**（`command/design.rs::design_send`）：先调模型、后写库；失败时输入框里的话原样留着。
 - 撤销和分叉靠版本树（选回 `base_version_id`），不删任何东西。
 - **回答是流式的**：`LlmProvider::chat_stream` → `CadProgress::Delta` → 后端攒 50 毫秒发一次 `cad-stream` 事件 → 前端 `state.cad_stream`（`LiveAnswer`）。只有给人看的自由文本走流式；JSON 模式的调用不流。界面上正文显示那句话，代码只报行数。
-- **一轮可以中途取消**（`src-tauri/src/turns.rs`，`cancel_turn(scope)`，作用域键 `design:<id>` / `board:<id>` / `research`）：**只把花时间的那一段包进 `turn_guard.run(..)`**（问模型、出图、跑脚本），落盘入库那一段不包——这样取消时「要么整轮入库，要么什么都不留」依然成立。新增一个会等很久的命令时照这个写。取消会连建模引擎里正在跑的脚本一起杀（`pp_cad::CancelFlag`）。错误码 `cancelled` 不是故障，前端当普通提示显示。
+- **一轮可以中途取消**（`src-tauri/src/turns.rs`，`cancel_turn(scope)`，作用域键 `design:<id>` / `board:<id>` / `research`）：**只把花时间的那一段包进 `turn_guard.run(..)`**（问模型、出图、跑脚本），落盘入库那一段不包——这样取消时「要么整轮入库，要么什么都不留」依然成立。新增一个会等很久的命令时照这个写。取消会连建模引擎里正在跑的脚本一起杀（`pp_cad::CancelFlag`）；手动运行代码、改参数的重建也走同一个开关（界面忙的时候一直有「停止」）。错误码 `cancelled` 不是故障，前端当普通提示显示。
 - 3D 视图的容器必须在组件创建时就在 DOM 里：不要把它放进 `<Show>` 分支（挂载的 Effect 只跑一次，容器晚出现就挂不上）。无内容时用覆盖层。
 
-- **分层**：`pp-cad` 管「执行一段代码」（引擎定位、沙箱、常驻进程 `Worker`、参数解析与改写、代码契约）；`pp-agent::cad` 管「和模型来回」（出规格、生成、修复循环、指令修补、复核），通过 `CadExecutor` trait 拿执行能力，所以流水线测试不需要引擎；`src-tauri/src/command/cad.rs` 提供真执行器、入库、演示脚本。
+- **分层**：`pp-cad` 管「执行一段代码」（引擎定位、沙箱、常驻进程 `Worker` 和它的槽位 `WorkerPool`——进程被杀 / 跑满任务数之后在后台换新、参数解析与改写、代码契约）；`pp-agent::cad` 管「和模型来回」（出规格、生成、修复循环、指令修补、复核），通过 `CadExecutor` trait 拿执行能力，所以流水线测试不需要引擎；`src-tauri/src/command/cad.rs` 提供真执行器、入库、演示脚本。
 - **代码契约**：`# ---- PARAMS ----`（每行 `名字 = 数值  # 单位 | 说明 | [最小, 最大]`）、每个特征一段 `# ---- FEATURE: name ----`、最终形体赋给 `result`。参数面板、改动段比对、局部修改都建立在它上面。
 - **提示词里的 build123d 速查表和完整示例是被测试锁住的**（`crates/pp-cad/py/test_cheatsheet.py` 逐条在真引擎上跑）。往 `prompts/cad_code.md` 里加 API 写法，就要在那个测试里加一条；升级 build123d 之后先跑它。
 - **检查结果是带类型的 `CadProblem`**：给模型的话写在 `for_model()`（英文），给用户的话在 `locales/*.json` 的 `cad.p_*`，前端 `side.rs::problem_text` 按 `kind` 分派。新增一种问题要三处一起加。

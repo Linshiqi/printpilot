@@ -2,7 +2,7 @@
 
 use leptos::prelude::*;
 use leptos_i18n::{t_string, td_string};
-use pp_common::cad::{CadBuildReport, CadParam, CadProblem, CadVersion};
+use pp_common::cad::{CadBuildReport, CadParam, CadProblem, CadVersion, PrintNote};
 
 use crate::i18n::{use_i18n, Locale};
 use crate::ui::{Badge, Card, SectionTitle, Tone};
@@ -26,11 +26,24 @@ pub fn problem_text(l: Locale, p: &CadProblem) -> String {
         CadProblem::Solids { count } => td_string!(l, cad.p_solids, count = *count).to_string(),
         CadProblem::Invalid => td_string!(l, cad.p_invalid).to_string(),
         CadProblem::OffPlate { z } => td_string!(l, cad.p_off_plate, z = format!("{z:.2}")).to_string(),
+        CadProblem::NoFlatBase { .. } => td_string!(l, cad.p_no_flat_base).to_string(),
         CadProblem::Size { got, want } => td_string!(l, cad.p_size, got = mm3(*got), want = mm3(*want)).to_string(),
         CadProblem::TooBig { size, .. } => td_string!(l, cad.p_too_big, size = mm3(*size)).to_string(),
         CadProblem::NoParams => td_string!(l, cad.p_no_params).to_string(),
         CadProblem::ParamRange { name, value, .. } => td_string!(l, cad.p_param_range, name = name, value = *value).to_string(),
         CadProblem::Unchanged => td_string!(l, cad.p_unchanged).to_string(),
+    }
+}
+
+/// 一条打印提醒 → 当前语言的一句话。
+pub fn note_text(l: Locale, n: &PrintNote) -> String {
+    match n {
+        PrintNote::NoFlatBase => td_string!(l, cad.note_no_flat_base).to_string(),
+        PrintNote::SmallContact { contact_mm2, footprint_mm2 } => {
+            let percent = format!("{:.1}", contact_mm2 / footprint_mm2.max(1e-9) * 100.0);
+            td_string!(l, cad.note_small_contact, area = format!("{contact_mm2:.0}"), percent = percent).to_string()
+        }
+        PrintNote::Overhang { area_mm2 } => td_string!(l, cad.note_overhang, area = format!("{:.1}", area_mm2 / 100.0)).to_string(),
     }
 }
 
@@ -67,6 +80,8 @@ pub fn MetricsCard(version: CadVersion) -> impl IntoView {
         }
     };
     let label = move |f: fn(Locale) -> &'static str| Signal::derive(move || f(i18n.get_locale()).to_string());
+    let notes = m.print_notes();
+    let bed_contact = m.bed_contact_mm2.map(|c| format!("{:.1} cm²", c / 100.0));
     let one_solid = if m.solids == 1 {
         "1".into_any()
     } else {
@@ -84,8 +99,17 @@ pub fn MetricsCard(version: CadVersion) -> impl IntoView {
                 {row(label(|l| td_string!(l, cad.solids)), one_solid)}
                 {row(label(|l| td_string!(l, cad.valid)), yes_no(m.is_valid).into_any())}
                 {row(label(|l| td_string!(l, lab.fits_bed)), yes_no(fits).into_any())}
+                {bed_contact.map(|text| row(label(|l| td_string!(l, cad.bed_contact)), text.into_any()))}
                 {row(label(|l| td_string!(l, cad.exec_time)), format!("{:.1} s", version.elapsed_ms as f64 / 1000.0).into_any())}
             </div>
+            {(!notes.is_empty()).then(|| view! {
+                <ul class="list-disc pl-4 space-y-1 text-xs leading-relaxed text-amber-700 dark:text-amber-300 selectable">
+                    {notes
+                        .into_iter()
+                        .map(|n| view! { <li class="break-words">{move || note_text(i18n.get_locale(), &n)}</li> })
+                        .collect_view()}
+                </ul>
+            })}
         </Card>
     }
 }
@@ -344,6 +368,7 @@ mod tests {
             CadProblem::Invalid,
             CadProblem::OffPlate { z: -3.0 },
             CadProblem::Size { got: [60.0, 24.0, 12.0], want: [60.0, 24.0, 16.0] },
+            CadProblem::NoFlatBase { contact_mm2: 0.0 },
             CadProblem::TooBig { size: [300.0, 24.0, 12.0], build: [256.0; 3] },
             CadProblem::NoParams,
             CadProblem::ParamRange { name: "width".into(), value: 5.0, min: Some(10.0), max: None },
@@ -358,6 +383,23 @@ mod tests {
         assert!(zh.contains("ValueError") && zh.contains("line 24"), "{zh}");
         assert!(problem_text(Locale::zh, &problems[4]).contains('3'));
         assert!(problem_text(Locale::zh, &problems[7]).contains("60.0 × 24.0 × 12.0"));
+    }
+
+    #[test]
+    fn every_print_note_has_a_sentence_in_every_locale_with_its_numbers() {
+        let notes = [
+            PrintNote::NoFlatBase,
+            PrintNote::SmallContact { contact_mm2: 36.0, footprint_mm2: 2400.0 },
+            PrintNote::Overhang { area_mm2: 2364.0 },
+        ];
+        for l in [Locale::zh, Locale::en] {
+            for n in &notes {
+                assert!(!note_text(l, n).is_empty());
+            }
+            let small = note_text(l, &notes[1]);
+            assert!(small.contains("36") && small.contains("1.5"), "面积和占比都要写出来:{small}");
+            assert!(note_text(l, &notes[2]).contains("23.6"), "悬空面积按 cm² 写");
+        }
     }
 
     #[test]

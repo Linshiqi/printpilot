@@ -1,18 +1,18 @@
 //! 项目看板:一张卡片 = 一个单品,列 = 阶段。拖动卡片推进阶段(docs/02-ux-flows.md §3.1)。
 
 use leptos::prelude::*;
-use leptos_i18n::t_string;
+use leptos_i18n::{t_string, td_string};
 use pp_common::gate::gate_passed;
 use pp_common::{NewProject, Project, ProjectStatus, Stage};
 use wasm_bindgen::JsCast;
 
 use crate::controller::{ForcedMove, ProjectController};
 use crate::i18n::use_i18n;
-use crate::i18n_util::{gate_label, stage_name, status_name};
+use crate::i18n_util::{current_locale, gate_label, stage_name, status_name};
 use crate::icon::{Icon, IconKind};
 use crate::pointer_drag::{PointerDrag, PointerDragGhost};
 use crate::state::AppState;
-use crate::ui::{Badge, Button, ButtonVariant, Dialog, DialogFooter, EmptyState, Field, TextArea, TextInput, Toggle, Tone};
+use crate::ui::{copy_entry, item, separator, Badge, Button, ButtonVariant, Dialog, DialogFooter, EmptyState, Field, TextArea, TextInput, Toggle, Tone};
 
 const DROP_ATTR: &str = "data-drop-stage";
 
@@ -28,6 +28,39 @@ pub fn BoardView(state: AppState) -> impl IntoView {
         if let Some(to) = Stage::parse(&stage_key) {
             ctl.request_move(project_id, to, forced);
         }
+    });
+    // 右键一张卡片:打开 / 推进到下一阶段(和拖过去一样,清单没完成会要原因)/ 直接去某个工作台
+    let card_menu = Callback::new(move |(ev, id): (web_sys::MouseEvent, String)| {
+        let Some(p) = state.projects.with_untracked(|list| list.iter().find(|p| p.id == id).cloned()) else {
+            state.open_menu(&ev, Vec::new());
+            return;
+        };
+        let l = current_locale();
+        let live = p.status == ProjectStatus::Active;
+        let next = p.stage.next();
+        let advance = match next {
+            Some(to) => {
+                let pid = p.id.clone();
+                item(td_string!(l, project.advance, stage = stage_name(l, to)), IconKind::ArrowRight, move || ctl.request_move(pid.clone(), to, forced)).disabled_if(!live)
+            }
+            None => item(td_string!(l, board.menu_last_stage), IconKind::ArrowRight, || {}).disabled_if(true),
+        };
+        let (open_id, label) = (p.id.clone(), format!("{} {}", p.code, p.title));
+        let (p1, p2, p3, p4) = (p.clone(), p.clone(), p.clone(), p);
+        state.open_menu(
+            &ev,
+            vec![
+                item(td_string!(l, board.menu_open), IconKind::Kanban, move || state.open_project.set(Some(open_id.clone()))),
+                advance,
+                separator(),
+                item(td_string!(l, project.do_research), IconKind::Lightbulb, move || ctl.start_research(&p1)),
+                item(td_string!(l, project.do_images), IconKind::Image, move || ctl.start_board(&p2)),
+                item(td_string!(l, project.do_model), IconKind::Box, move || ctl.start_design(&p3, None)),
+                item(td_string!(l, project.do_pricing), IconKind::Ruler, move || ctl.start_pricing(&p4)),
+                separator(),
+                copy_entry(state, td_string!(l, menu.copy_name), label),
+            ],
+        );
     });
 
     let is_empty = move || state.projects_loaded.get() && state.projects.with(Vec::is_empty);
@@ -76,7 +109,7 @@ pub fn BoardView(state: AppState) -> impl IntoView {
                     <div class="h-full flex gap-3 p-4 min-w-max">
                         {Stage::ALL
                             .into_iter()
-                            .map(|stage| view! { <Column state=state stage=stage drag=drag show_finished=show_finished/> })
+                            .map(|stage| view! { <Column state=state stage=stage drag=drag show_finished=show_finished on_menu=card_menu/> })
                             .collect_view()}
                     </div>
                 </div>
@@ -90,7 +123,13 @@ pub fn BoardView(state: AppState) -> impl IntoView {
 }
 
 #[component]
-fn Column(state: AppState, stage: Stage, drag: PointerDrag, show_finished: RwSignal<bool>) -> impl IntoView {
+fn Column(
+    state: AppState,
+    stage: Stage,
+    drag: PointerDrag,
+    show_finished: RwSignal<bool>,
+    on_menu: Callback<(web_sys::MouseEvent, String)>,
+) -> impl IntoView {
     let i18n = use_i18n();
     let key = stage.as_str();
     let cards = move || {
@@ -128,7 +167,7 @@ fn Column(state: AppState, stage: Stage, drag: PointerDrag, show_finished: RwSig
                     key=|p| (p.id.clone(), p.updated_at, p.stage_entered_at)
                     let:project
                 >
-                    <ProjectCard state=state project=project drag=drag/>
+                    <ProjectCard state=state project=project drag=drag on_menu=on_menu/>
                 </For>
                 <Show when=move || cards().is_empty()>
                     <div class="h-16 flex items-center justify-center rounded-lg border border-dashed border-gray-300 dark:border-gray-600 text-[11px] text-gray-400">
@@ -141,7 +180,7 @@ fn Column(state: AppState, stage: Stage, drag: PointerDrag, show_finished: RwSig
 }
 
 #[component]
-fn ProjectCard(state: AppState, project: Project, drag: PointerDrag) -> impl IntoView {
+fn ProjectCard(state: AppState, project: Project, drag: PointerDrag, on_menu: Callback<(web_sys::MouseEvent, String)>) -> impl IntoView {
     let i18n = use_i18n();
     let p = StoredValue::new(project.clone());
     let id = StoredValue::new(project.id.clone());
@@ -162,7 +201,12 @@ fn ProjectCard(state: AppState, project: Project, drag: PointerDrag) -> impl Int
             class=("border-gray-200", move || !stale())
             class=("dark:border-gray-700", move || !stale())
             class=("opacity-40", dragging)
+            on:contextmenu=move |ev| on_menu.run((ev, id.get_value()))
             on:pointerdown=move |ev| {
+                // 右键是菜单,不是拖拽
+                if ev.button() != 0 {
+                    return;
+                }
                 let Some(el) = ev.current_target().and_then(|t| t.dyn_into::<web_sys::Element>().ok()) else {
                     return;
                 };

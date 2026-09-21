@@ -17,7 +17,7 @@ use crate::i18n::{use_i18n, Locale};
 use crate::icon::IconKind;
 use crate::ipc::{self, cmd};
 use crate::state::{AppState, Handoff};
-use crate::ui::{Badge, Button, ButtonVariant, Card, EmptyState, Field, IconButton, SectionTitle, TextArea, TextInput, Tone};
+use crate::ui::{copy_entry, item, Badge, Button, ButtonVariant, Card, EmptyState, Field, IconButton, SectionTitle, TextArea, TextInput, Tone};
 use crate::utils::{fmt_int, format_ts, local_tz_offset_minutes};
 
 #[component]
@@ -233,6 +233,7 @@ pub fn ResearchView(state: AppState) -> impl IntoView {
                         <For each=move || history.get() key=|r| r.id.clone() let:row>
                             {
                                 let run_id = StoredValue::new(row.id.clone());
+                                let topic = StoredValue::new(row.topic.clone());
                                 let active = move || result.with(|r| r.as_ref().is_some_and(|r| run_id.with_value(|id| &r.run_id == id)));
                                 view! {
                                     <button
@@ -243,6 +244,16 @@ pub fn ResearchView(state: AppState) -> impl IntoView {
                                         class=("hover:bg-gray-100", move || !active())
                                         class=("dark:hover:bg-gray-700/60", move || !active())
                                         on:click=move |_| open_run(run_id.get_value())
+                                        on:contextmenu=move |ev| {
+                                            let l = current_locale();
+                                            state.open_menu(
+                                                &ev,
+                                                vec![
+                                                    item(td_string!(l, menu.open), IconKind::Lightbulb, move || open_run(run_id.get_value())),
+                                                    copy_entry(state, td_string!(l, research.menu_copy_topic), topic.get_value()),
+                                                ],
+                                            );
+                                        }
                                     >
                                         <div class="text-xs font-medium truncate text-gray-800 dark:text-gray-100">{row.topic.clone()}</div>
                                         <div class="text-[11px] tabular-nums text-gray-400">

@@ -147,6 +147,8 @@ pub struct AppState {
     pub cad_engine_progress: RwSignal<Option<(String, u64, u64)>>,
     /// 正在出图的那一轮走到了哪一步:`(phase, provider, count)`,由 image-progress 事件驱动
     pub image_progress: RwSignal<Option<(String, String, u32)>>,
+    /// 开着的右键菜单(`ui::context_menu`)。元素上用 `state.open_menu(&ev, 菜单项)` 打开
+    pub context_menu: RwSignal<Option<crate::ui::ContextMenu>>,
 }
 
 impl AppState {
@@ -173,6 +175,7 @@ impl AppState {
             cad_stream: RwSignal::new(LiveAnswer::default()),
             cad_engine_progress: RwSignal::new(None),
             image_progress: RwSignal::new(None),
+            context_menu: RwSignal::new(None),
         }
     }
 

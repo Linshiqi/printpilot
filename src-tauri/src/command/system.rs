@@ -31,6 +31,18 @@ pub async fn set_demo_mode(app: AppHandle, ctx: State<'_, Arc<AppCtx>>, enabled:
     build_info(&app, &ctx)
 }
 
+/// 读系统剪贴板里的文字——右键菜单的「粘贴」。WebView 自己读剪贴板(`navigator.clipboard.readText`)
+/// 在 Windows 上会弹权限框,所以走后端(velo 的做法)。剪贴板里不是文字(图片、文件)时返回空串,不算错。
+#[tauri::command(rename_all = "snake_case")]
+pub async fn read_clipboard_text() -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let mut clipboard = arboard::Clipboard::new().map_err(|e| errcode::err(errcode::IO_FAILED, e))?;
+        Ok(clipboard.get_text().unwrap_or_default())
+    })
+    .await
+    .map_err(|e| errcode::err(errcode::IO_FAILED, e))?
+}
+
 /// 前端启动耗时埋点(velo 做法):wasm 起来用了多久、首屏挂载用了多久。
 #[tauri::command(rename_all = "snake_case")]
 pub fn log_boot(label: String, wasm_ms: f64, mount_ms: f64, bundle: String) {

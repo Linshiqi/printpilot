@@ -13,6 +13,7 @@ pub mod cmd {
     pub const REVEAL_LIBRARY: &str = "reveal_library";
     pub const SET_DEMO_MODE: &str = "set_demo_mode";
     pub const CANCEL_TURN: &str = "cancel_turn";
+    pub const READ_CLIPBOARD_TEXT: &str = "read_clipboard_text";
 
     pub const LIST_PROJECTS: &str = "list_projects";
     pub const CREATE_PROJECT: &str = "create_project";
@@ -29,6 +30,7 @@ pub mod cmd {
     pub const LIST_ASSETS: &str = "list_assets";
     pub const DELETE_ASSET: &str = "delete_asset";
     pub const OPEN_ASSET_EXTERNAL: &str = "open_asset_external";
+    pub const COPY_ASSET_IMAGE: &str = "copy_asset_image";
 
     pub const LAB_GENERATE_SAMPLE: &str = "lab_generate_sample";
     pub const IMPORT_MODEL: &str = "import_model";

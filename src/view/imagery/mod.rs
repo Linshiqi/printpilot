@@ -22,7 +22,7 @@ use crate::icon::{Icon, IconKind};
 use crate::ipc::{self, cmd};
 use crate::state::{AppState, Handoff, Route};
 use crate::theme::{get_pref, set_pref};
-use crate::ui::{Badge, Button, ButtonVariant, Dialog, DialogFooter, EmptyState, IconButton, Segmented, Tone};
+use crate::ui::{basics, copy_entry, image_entries, item, separator, Badge, Button, ButtonVariant, Dialog, DialogFooter, EmptyState, IconButton, Segmented, Tone};
 
 /// 一轮最多涉及 3 张图(当前选中的那张也算一张)——和后端的 MAX_TURN_IMAGES 一致
 const MAX_TURN_IMAGES: usize = 3;
@@ -51,8 +51,13 @@ pub fn ImageryView(state: AppState) -> impl IntoView {
     let pending = RwSignal::new(Vec::<Asset>::new());
     let count = RwSignal::new(get_pref("imagery_count").and_then(|c| c.parse::<u32>().ok()).unwrap_or(2));
     let delete_dialog = RwSignal::new(false);
+    // 要删的是哪个画板 / 要拿掉的是哪张图(`None` = 打开着的那个 / 当前这张)。右键菜单可以指向列表里任意一个
+    let delete_target = RwSignal::new(None::<String>);
     let remove_dialog = RwSignal::new(false);
+    let remove_target = RwSignal::new(None::<String>);
     let renaming = RwSignal::new(None::<String>);
+    // 右键菜单点了「重命名」、但那个画板还没打开:先打开,载入之后再进入改名
+    let rename_pending = StoredValue::new(None::<String>);
 
     let demo = move || state.app_info.with(|i| i.as_ref().is_some_and(|i| i.demo_mode));
     let board_id = move || board.with_untracked(|b| b.as_ref().map(|b| b.id.clone()));
@@ -94,7 +99,10 @@ pub fn ImageryView(state: AppState) -> impl IntoView {
                     pending.set(Vec::new());
                     messages.set(d.messages);
                     versions.set(d.versions);
+                    let rename_now = (rename_pending.get_value().as_deref() == Some(d.board.id.as_str())).then(|| d.board.name.clone());
+                    rename_pending.set_value(None);
                     board.set(Some(d.board));
+                    renaming.set(rename_now);
                 }
                 Err(e) => state.notify_error(e),
             }
@@ -196,8 +204,7 @@ pub fn ImageryView(state: AppState) -> impl IntoView {
             }
         });
     };
-    let toggle_adopt = move || {
-        let Some(v) = current.get_untracked() else { return };
+    let adopt_version = move |v: ImageVersion| {
         spawn_local(async move {
             let args = serde_json::json!({ "version_id": v.id, "adopted": !v.adopted });
             match ipc::call::<_, ImageVersion>(cmd::BOARD_ADOPT, &args).await {
@@ -214,13 +221,19 @@ pub fn ImageryView(state: AppState) -> impl IntoView {
             }
         });
     };
+    let toggle_adopt = move || {
+        if let Some(v) = current.get_untracked() {
+            adopt_version(v);
+        }
+    };
     let remove_image = move || {
         remove_dialog.set(false);
-        let Some(v) = current.get_untracked() else { return };
+        let Some(version_id) = remove_target.get_untracked().or_else(|| current.get_untracked().map(|v| v.id)) else { return };
+        remove_target.set(None);
         spawn_local(async move {
-            match ipc::call::<_, ImageBoard>(cmd::BOARD_REMOVE_IMAGE, &serde_json::json!({ "version_id": v.id })).await {
+            match ipc::call::<_, ImageBoard>(cmd::BOARD_REMOVE_IMAGE, &serde_json::json!({ "version_id": version_id })).await {
                 Ok(b) => {
-                    versions.update(|l| l.retain(|x| x.id != v.id));
+                    versions.update(|l| l.retain(|x| x.id != version_id));
                     board.set(Some(b));
                     reload_list();
                     state.reload_project_facts();
@@ -230,10 +243,9 @@ pub fn ImageryView(state: AppState) -> impl IntoView {
         });
     };
     // 送去建模:用这张图新建一个设计,跳到「建模」打开它
-    let to_design = move || {
-        let Some(v) = current.get_untracked() else { return };
+    let design_from = move |version_id: String| {
         spawn_local(async move {
-            match ipc::call::<_, CadDesign>(cmd::BOARD_TO_DESIGN, &serde_json::json!({ "version_id": v.id })).await {
+            match ipc::call::<_, CadDesign>(cmd::BOARD_TO_DESIGN, &serde_json::json!({ "version_id": version_id })).await {
                 Ok(d) => {
                     set_pref("studio_design", &d.id);
                     state.go(Route::Studio);
@@ -242,19 +254,88 @@ pub fn ImageryView(state: AppState) -> impl IntoView {
             }
         });
     };
-    let export = move || {
-        let Some(v) = current.get_untracked() else { return };
+    let to_design = move || {
+        if let Some(v) = current.get_untracked() {
+            design_from(v.id);
+        }
+    };
+    let export_version = move |version_id: String| {
         let name = board.with_untracked(|b| b.as_ref().map(|b| b.name.clone())).unwrap_or_else(|| "image".into());
         spawn_local(async move {
             let Some(dest) = ipc::pick_save_path("Export", &format!("{name}.jpg"), "jpg").await else {
                 return;
             };
-            match ipc::call_unit(cmd::BOARD_EXPORT, &serde_json::json!({ "version_id": v.id, "dest_path": dest })).await {
+            match ipc::call_unit(cmd::BOARD_EXPORT, &serde_json::json!({ "version_id": version_id, "dest_path": dest })).await {
                 Ok(()) => state.notify_info(td_string!(current_locale(), lab.exported)),
                 Err(e) => state.notify_error(e),
             }
         });
     };
+    let export = move || {
+        if let Some(v) = current.get_untracked() {
+            export_version(v.id);
+        }
+    };
+    // 右键一张图(胶片条、对话里、中间的大图):对**这一张**操作,不用先把它选成当前
+    let version_menu = move |ev: web_sys::MouseEvent, version_id: String| {
+        let Some(v) = versions.with_untracked(|l| l.iter().find(|v| v.id == version_id).cloned()) else {
+            state.open_menu(&ev, Vec::new());
+            return;
+        };
+        let l = current_locale();
+        let is_current = current.with_untracked(|c| c.as_ref().is_some_and(|c| c.id == v.id));
+        let working = busy.get_untracked();
+        let (select_id, design_id, export_id, remove_id, adopt) = (v.id.clone(), v.id.clone(), v.id.clone(), v.id.clone(), v.clone());
+        let mut entries = vec![
+            item(td_string!(l, imagery.menu_select), IconKind::Check, move || select(select_id.clone())).disabled_if(is_current),
+            item(if v.adopted { td_string!(l, imagery.unadopt) } else { td_string!(l, imagery.adopt) }, IconKind::Star, move || adopt_version(adopt.clone())),
+            item(td_string!(l, imagery.to_design), IconKind::Box, move || design_from(design_id.clone())).disabled_if(working),
+            item(td_string!(l, imagery.menu_export), IconKind::Download, move || export_version(export_id.clone())),
+            separator(),
+        ];
+        entries.extend(image_entries(state, v.asset_id.clone()));
+        if !v.prompt.trim().is_empty() {
+            entries.push(copy_entry(state, td_string!(l, menu.copy_prompt), v.prompt.clone()));
+        }
+        entries.push(separator());
+        entries.push(
+            item(td_string!(l, imagery.remove_image), IconKind::Trash, move || {
+                remove_target.set(Some(remove_id.clone()));
+                remove_dialog.set(true);
+            })
+            .danger()
+            .disabled_if(working),
+        );
+        state.open_menu(&ev, entries);
+    };
+    let version_menu = Callback::new(move |(ev, id): (web_sys::MouseEvent, String)| version_menu(ev, id));
+    // ---- 右键菜单用的:对列表里任意一个画板操作 ----
+    let start_rename = move |id: String| {
+        if board_id().as_deref() == Some(id.as_str()) {
+            renaming.set(board.with_untracked(|b| b.as_ref().map(|b| b.name.clone())));
+        } else {
+            rename_pending.set_value(Some(id.clone()));
+            open(id);
+        }
+    };
+    let ask_delete = move |id: String| {
+        delete_target.set(Some(id));
+        delete_dialog.set(true);
+    };
+    let delete_name = move || {
+        let id = delete_target.get().or_else(|| board.with(|b| b.as_ref().map(|b| b.id.clone())));
+        id.and_then(|id| boards.with(|l| l.iter().find(|b| b.id == id).map(|b| b.name.clone()))).unwrap_or_default()
+    };
+    // 改名框一出现就拿到焦点并全选(从右键菜单进来时,没有任何点击会落在它上面)
+    let rename_input = NodeRef::<leptos::html::Input>::new();
+    Effect::new(move |_| {
+        if renaming.with(Option::is_some) {
+            if let Some(input) = rename_input.get() {
+                let _ = input.focus();
+                input.select();
+            }
+        }
+    });
     let set_options = move |purpose: ImagePurpose, aspect: ImageAspect| {
         let Some(id) = board_id() else { return };
         spawn_local(async move {
@@ -296,15 +377,22 @@ pub fn ImageryView(state: AppState) -> impl IntoView {
         });
     };
     let delete_board = move || {
-        let Some(id) = board_id() else { return };
+        let Some(id) = delete_target.get_untracked().or_else(board_id) else { return };
+        let was_open = board_id().as_deref() == Some(id.as_str());
         delete_dialog.set(false);
+        delete_target.set(None);
         spawn_local(async move {
             match ipc::call_unit(cmd::BOARD_DELETE, &serde_json::json!({ "id": id })).await {
                 Ok(()) => {
+                    boards.update(|l| l.retain(|b| b.id != id));
+                    state.reload_project_facts();
+                    // 删的是列表里别的画板:打开着的这个不受影响
+                    if !was_open {
+                        return;
+                    }
                     board.set(None);
                     messages.set(Vec::new());
                     versions.set(Vec::new());
-                    boards.update(|l| l.retain(|b| b.id != id));
                     if let Some(next) = boards.with_untracked(|l| l.first().map(|b| b.id.clone())) {
                         open(next);
                     }
@@ -386,7 +474,7 @@ pub fn ImageryView(state: AppState) -> impl IntoView {
                             <p class="p-3 text-xs leading-relaxed text-gray-400">{move || t_string!(i18n, imagery.no_boards)}</p>
                         </Show>
                         <For each=move || boards.get() key=|b| (b.id.clone(), b.updated_at, b.cover_asset_id.clone(), b.name.clone()) let:row>
-                            <BoardRow row=row board=board on_open=open/>
+                            <BoardRow state=state row=row board=board on_open=open on_rename=start_rename on_delete=ask_delete/>
                         </For>
                     </div>
                 </aside>
@@ -407,6 +495,7 @@ pub fn ImageryView(state: AppState) -> impl IntoView {
                                 Some(_) => view! {
                                     <input
                                         type="text"
+                                        node_ref=rename_input
                                         class="w-44 h-7 px-2 rounded-md border border-brand bg-white dark:bg-gray-900 text-sm text-gray-900 dark:text-gray-100 focus:outline-none"
                                         prop:value=move || renaming.get().unwrap_or_default()
                                         on:input=move |e| renaming.set(Some(event_target_value(&e)))
@@ -462,7 +551,14 @@ pub fn ImageryView(state: AppState) -> impl IntoView {
                                 />
                             </Show>
                             <div class="flex-1"></div>
-                            <IconButton icon=IconKind::Trash label=move || t_string!(i18n, imagery.delete_board) on_click=move || delete_dialog.set(true)/>
+                            <IconButton
+                                icon=IconKind::Trash
+                                label=move || t_string!(i18n, imagery.delete_board)
+                                on_click=move || {
+                                    delete_target.set(None);
+                                    delete_dialog.set(true);
+                                }
+                            />
                         </div>
                         // 第二行:下一次出图用的设置(用途决定提示词怎么写,画幅决定出图比例)。窄窗口下可以横向滚动
                         <div class="shrink-0 h-10 px-3 flex items-center gap-2 border-b border-gray-200 dark:border-gray-700 text-xs text-gray-500 dark:text-gray-400 whitespace-nowrap overflow-x-auto">
@@ -488,9 +584,17 @@ pub fn ImageryView(state: AppState) -> impl IntoView {
                         </Show>
                         <div class="relative flex-1 min-h-0 bg-gray-100 dark:bg-gray-900 flex items-center justify-center p-4">
                             {move || match current.get() {
-                                Some(v) => view! {
-                                    <img src=ipc::asset_url(&v.asset_id) class="max-w-full max-h-full object-contain rounded-lg shadow-lg" draggable="false"/>
-                                }.into_any(),
+                                Some(v) => {
+                                    let vid = v.id.clone();
+                                    view! {
+                                        <img
+                                            src=ipc::asset_url(&v.asset_id)
+                                            class="max-w-full max-h-full object-contain rounded-lg shadow-lg"
+                                            draggable="false"
+                                            on:contextmenu=move |ev| version_menu.run((ev, vid.clone()))
+                                        />
+                                    }.into_any()
+                                }
                                 None => view! {
                                     <div class="pointer-events-none">
                                         <EmptyState icon=IconKind::Image title=move || t_string!(i18n, imagery.viewer_empty) hint=move || t_string!(i18n, imagery.viewer_empty_hint)/>
@@ -506,7 +610,10 @@ pub fn ImageryView(state: AppState) -> impl IntoView {
                                         icon=IconKind::Trash
                                         label=move || t_string!(i18n, imagery.remove_image)
                                         disabled=no_image
-                                        on_click=move || remove_dialog.set(true)
+                                        on_click=move || {
+                                            remove_target.set(None);
+                                            remove_dialog.set(true);
+                                        }
                                     />
                                 </div>
                                 <Button small=true variant=ButtonVariant::Secondary icon=IconKind::Check disabled=no_image on_click=toggle_adopt>
@@ -526,7 +633,7 @@ pub fn ImageryView(state: AppState) -> impl IntoView {
                         <Show when=move || !versions.with(Vec::is_empty)>
                             <div class="shrink-0 h-24 px-3 flex items-center gap-2 overflow-x-auto border-t border-gray-200 dark:border-gray-700">
                                 <For each=move || versions.get() key=|v| (v.id.clone(), v.adopted) let:v>
-                                    <FilmCell version=v current=current on_select=select/>
+                                    <FilmCell version=v current=current on_select=select on_menu=version_menu/>
                                 </For>
                             </div>
                         </Show>
@@ -545,7 +652,7 @@ pub fn ImageryView(state: AppState) -> impl IntoView {
                                 </div>
                             </Show>
                             <For each=move || messages.get() key=|m| m.id.clone() let:m>
-                                <MessageView msg=m versions=versions current=current on_select=select/>
+                                <MessageView state=state msg=m versions=versions current=current on_select=select on_menu=version_menu/>
                             </For>
                             <Show when=move || busy.get()>
                                 <div class="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
@@ -641,6 +748,7 @@ pub fn ImageryView(state: AppState) -> impl IntoView {
             </div>
 
             <Dialog open=delete_dialog title=move || t_string!(i18n, imagery.delete_board)>
+                <p class="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{delete_name}</p>
                 <p class="text-sm leading-relaxed text-gray-600 dark:text-gray-300">{move || t_string!(i18n, imagery.delete_confirm)}</p>
                 <DialogFooter>
                     <Button variant=ButtonVariant::Secondary on_click=move || delete_dialog.set(false)>{move || t_string!(i18n, common.cancel)}</Button>
@@ -659,9 +767,31 @@ pub fn ImageryView(state: AppState) -> impl IntoView {
 }
 
 #[component]
-fn BoardRow(row: ImageBoardSummary, board: RwSignal<Option<ImageBoard>>, #[prop(into)] on_open: Callback<(String,)>) -> impl IntoView {
+fn BoardRow(
+    state: AppState,
+    row: ImageBoardSummary,
+    board: RwSignal<Option<ImageBoard>>,
+    #[prop(into)] on_open: Callback<(String,)>,
+    #[prop(into)] on_rename: Callback<(String,)>,
+    #[prop(into)] on_delete: Callback<(String,)>,
+) -> impl IntoView {
     let i18n = use_i18n();
     let id = StoredValue::new(row.id.clone());
+    let name = StoredValue::new(row.name.clone());
+    let menu = move |ev: web_sys::MouseEvent| {
+        let l = current_locale();
+        let (open_id, rename_id, delete_id) = (id.get_value(), id.get_value(), id.get_value());
+        state.open_menu(
+            &ev,
+            vec![
+                item(td_string!(l, menu.open), IconKind::Image, move || on_open.run((open_id.clone(),))),
+                item(td_string!(l, menu.rename), IconKind::Pencil, move || on_rename.run((rename_id.clone(),))),
+                copy_entry(state, td_string!(l, menu.copy_name), name.get_value()),
+                separator(),
+                item(td_string!(l, menu.delete), IconKind::Trash, move || on_delete.run((delete_id.clone(),))).danger(),
+            ],
+        );
+    };
     let active = move || board.with(|b| b.as_ref().is_some_and(|b| id.with_value(|id| &b.id == id)));
     let purpose = row.purpose;
     let images = row.images;
@@ -673,6 +803,7 @@ fn BoardRow(row: ImageBoardSummary, board: RwSignal<Option<ImageBoard>>, #[prop(
             class=("hover:bg-gray-100", move || !active())
             class=("dark:hover:bg-gray-700/60", move || !active())
             on:click=move |_| on_open.run((id.get_value(),))
+            on:contextmenu=menu
         >
             <div class="w-11 h-11 shrink-0 rounded-md overflow-hidden bg-gray-100 dark:bg-gray-900 flex items-center justify-center text-gray-300 dark:text-gray-600">
                 {match row.cover_asset_id.clone() {
@@ -691,7 +822,12 @@ fn BoardRow(row: ImageBoardSummary, board: RwSignal<Option<ImageBoard>>, #[prop(
 }
 
 #[component]
-fn FilmCell(version: ImageVersion, current: Memo<Option<ImageVersion>>, #[prop(into)] on_select: Callback<(String,)>) -> impl IntoView {
+fn FilmCell(
+    version: ImageVersion,
+    current: Memo<Option<ImageVersion>>,
+    #[prop(into)] on_select: Callback<(String,)>,
+    on_menu: Callback<(web_sys::MouseEvent, String)>,
+) -> impl IntoView {
     let id = StoredValue::new(version.id.clone());
     let active = move || current.with(|c| c.as_ref().is_some_and(|c| id.with_value(|id| &c.id == id)));
     view! {
@@ -702,6 +838,7 @@ fn FilmCell(version: ImageVersion, current: Memo<Option<ImageVersion>>, #[prop(i
             class=("border-transparent", move || !active())
             title=version.prompt.clone()
             on:click=move |_| on_select.run((id.get_value(),))
+            on:contextmenu=move |ev| on_menu.run((ev, id.get_value()))
         >
             <img src=ipc::asset_url(&version.asset_id) class="w-full h-full object-cover" draggable="false"/>
             {version.adopted.then(|| view! {
@@ -720,15 +857,26 @@ fn FilmCell(version: ImageVersion, current: Memo<Option<ImageVersion>>, #[prop(i
 
 #[component]
 fn MessageView(
+    state: AppState,
     msg: ImageMessage,
     versions: RwSignal<Vec<ImageVersion>>,
     current: Memo<Option<ImageVersion>>,
     #[prop(into)] on_select: Callback<(String,)>,
+    on_menu: Callback<(web_sys::MouseEvent, String)>,
 ) -> impl IntoView {
     let i18n = use_i18n();
+    // 右键一条消息:复制这段话(点在图上的话,前面还有图片的那几项)
+    let said = StoredValue::new(msg.content.clone());
+    let text_menu = move |ev: web_sys::MouseEvent| {
+        let mut entries = basics(state, &ev);
+        if !said.with_value(|s| s.trim().is_empty()) {
+            entries.push(copy_entry(state, td_string!(current_locale(), menu.copy_text), said.get_value()));
+        }
+        state.open_menu(&ev, entries);
+    };
     if msg.from_user {
         return view! {
-            <div class="flex flex-col items-end gap-1">
+            <div class="flex flex-col items-end gap-1" on:contextmenu=text_menu>
                 {(!msg.image_asset_ids.is_empty()).then(|| view! {
                     <div class="flex flex-wrap justify-end gap-1.5">
                         {msg.image_asset_ids.iter().map(|id| view! {
@@ -767,7 +915,7 @@ fn MessageView(
     let prompt = msg.extra.prompt.clone().unwrap_or_default();
 
     view! {
-        <div class="space-y-1.5">
+        <div class="space-y-1.5" on:contextmenu=text_menu>
             {(!msg.content.trim().is_empty()).then(|| view! {
                 <div class="max-w-[95%] px-3 py-2 rounded-2xl rounded-bl-md bg-gray-100 dark:bg-gray-700/70 text-sm leading-relaxed whitespace-pre-wrap \
                             text-gray-900 dark:text-gray-100 selectable">
@@ -792,6 +940,7 @@ fn MessageView(
                                     class=("border-brand", active)
                                     class=("border-transparent", move || !active())
                                     on:click=move |_| on_select.run((vid.get_value(),))
+                                    on:contextmenu=move |ev| on_menu.run((ev, vid.get_value()))
                                 >
                                     {move || asset().map(|a| view! { <img src=ipc::asset_url(&a) class="w-full h-auto block" draggable="false"/> })}
                                 </button>

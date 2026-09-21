@@ -289,6 +289,7 @@ result = body\n";
             faces: 10,
             edges: 24,
             is_valid: true,
+            ..Default::default()
         }
     }
 

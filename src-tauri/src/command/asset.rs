@@ -87,6 +87,31 @@ pub async fn open_asset_external(app: AppHandle, ctx: State<'_, Arc<AppCtx>>, id
         .map_err(|e| errcode::err(errcode::IO_FAILED, e))
 }
 
+/// 把一张图片资产放进系统剪贴板——右键菜单的「复制图片」。放的是解码后的位图,
+/// 所以微信、小红书网页版、画图、PPT 里都能直接粘贴(放文件路径的话,多数地方粘不出图)。
+#[tauri::command(rename_all = "snake_case")]
+pub async fn copy_asset_image(ctx: State<'_, Arc<AppCtx>>, id: String) -> Result<(), String> {
+    let asset = ctx.db.get_asset(&id).map_err(|e| e.to_wire())?;
+    if !matches!(asset.kind, AssetKind::Image | AssetKind::Photo) {
+        return Err(errcode::err(errcode::INVALID_INPUT, format!("asset {id} is not an image")));
+    }
+    let path = ctx.asset_path(&asset.rel_path);
+    tauri::async_runtime::spawn_blocking(move || {
+        let pixels = image::open(&path).map_err(|e| errcode::err(errcode::IO_FAILED, e))?.to_rgba8();
+        let (width, height) = pixels.dimensions();
+        let mut clipboard = arboard::Clipboard::new().map_err(|e| errcode::err(errcode::IO_FAILED, e))?;
+        clipboard
+            .set_image(arboard::ImageData {
+                width: width as usize,
+                height: height as usize,
+                bytes: std::borrow::Cow::Owned(pixels.into_raw()),
+            })
+            .map_err(|e| errcode::err(errcode::IO_FAILED, e))
+    })
+    .await
+    .map_err(|e| errcode::err(errcode::IO_FAILED, e))?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

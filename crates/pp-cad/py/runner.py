@@ -6,7 +6,8 @@
 
 job.json:
   { "code": "...", "out_dir": "...", "exports": ["step", "stl", "3mf"],
-    "stl_tolerance": 0.01, "stl_angular_tolerance": 0.1 }
+    "stl_tolerance": 0.02, "stl_angular_tolerance": 0.2 }
+  stl_tolerance 是**绝对**弦差(毫米),不是相对值——见 mesh()。
 
 结果写到 <out_dir>/result.json(无论成败都会写;退出码 0 = 成功,1 = 失败):
   成功 { "ok": true,  "files": {...}, "metrics": {...}, "stdout": "...", "elapsed_ms": 123 }
@@ -166,8 +167,89 @@ def as_shape(result):
     return result
 
 
+def mesh(shape, tol, ang):
+    """把形体三角化一次;之后量包围盒(曲面部分)、导 STL 都用这一份网格。
+
+    `tol` 是**绝对**弦差(毫米)。build123d 自带的 export_stl 用的是相对偏差(isRelative=True):
+    小孔被细分得过头(165 个孔的板 8 万多面、三角化 1.8 秒),大曲面反而没有误差上限(60 mm 的放样花瓶
+    实际弦差约 0.6 mm,打印出来看得见棱)。绝对偏差 0.02 mm / 0.2 rad 对 FDM 绰绰有余,常见零件还快 2~3 倍。
+    """
+    from OCP.BRepMesh import BRepMesh_IncrementalMesh
+
+    BRepMesh_IncrementalMesh(shape.wrapped, tol, False, ang, True)
+
+
+def bounds(shape, faces):
+    """包围盒(要先 mesh())。解析面走精确算法,环面和自由曲面走三角网。
+
+    build123d 默认的精确包围盒在带圆角的零件上要 150~190 毫秒——比建出这个零件还久。实测慢的只有两类面:
+    环面(圆角拐弯处,每个面约 26 毫秒)和样条面(约 19 毫秒);平面 / 圆柱 / 圆锥 / 球有解析解,每个面 0.05 毫秒。
+    不精确的那种(optimal=False)不能用:它在圆角 / 环面 / 样条面上偏大 1 ~ 50 毫米。
+    所以:解析面照旧精确(22 mm 的圆柱量出来就是 22.00);环面和自由曲面用网格顶点——顶点都在曲面上,
+    只会偏小、且不超过弦差(0.02 mm)。零件的最外沿几乎总是平面或圆柱,落在后一类上的情况很少。
+    """
+    import build123d as bd
+    from OCP.Bnd import Bnd_Box
+    from OCP.BRepBndLib import BRepBndLib
+
+    analytic = (bd.GeomType.PLANE, bd.GeomType.CYLINDER, bd.GeomType.CONE, bd.GeomType.SPHERE)
+    exact, meshed = Bnd_Box(), Bnd_Box()
+    for face in faces:
+        if face.geom_type in analytic:
+            BRepBndLib.AddOptimal_s(face.wrapped, exact, False, False)  # 不用网格、不加形体容差
+        else:
+            BRepBndLib.Add_s(face.wrapped, meshed, True)  # useTriangulation
+    lo, hi = [math.inf] * 3, [-math.inf] * 3
+    for box in (exact, meshed):
+        if box.IsVoid():
+            continue
+        gap = box.GetGap()  # OCC 会按网格偏差 / 容差把盒子撑大一圈;去掉它,得到真正的范围
+        x0, y0, z0, x1, y1, z1 = box.Get()
+        lo = [min(a, b + gap) for a, b in zip(lo, (x0, y0, z0))]
+        hi = [max(a, b - gap) for a, b in zip(hi, (x1, y1, z1))]
+    if math.isinf(lo[0]):  # 一个面都没有(不是实体):交给后面的「没有体积」去报
+        bb = shape.bounding_box()
+        return [bb.min.X, bb.min.Y, bb.min.Z], [bb.max.X, bb.max.Y, bb.max.Z]
+    return lo, hi
+
+
+def printability(faces, z_min):
+    """两项 FDM 可打印性的量测,只看平面(精确、便宜;曲面的悬垂要采样,先不做):
+    - bed_contact_mm2:贴在打印床上的平面面积。太小 = 零件只靠一条边 / 一个曲面着床,打不成;
+    - overhang_mm2:离开床面、法线朝下的平面(天花板 / 悬臂 / 桥)的面积——这些地方要么搭桥、要么加支撑。
+    """
+    import build123d as bd
+
+    contact = overhang = 0.0
+    for face in faces:
+        if face.geom_type != bd.GeomType.PLANE:
+            continue
+        n = face.normal_at()
+        if n.Z > -0.999:  # 只要正朝下的平面;斜面(> 45° 的另算,先不做)
+            continue
+        if abs(face.center().Z - z_min) <= 0.02:
+            contact += face.area
+        else:
+            overhang += face.area
+    return float(contact), float(overhang)
+
+
+def is_valid(shape):
+    """OCC 的拓扑 / 几何自检,只跑一遍。
+
+    build123d 的 `is_valid` 在不同版本里一会儿是方法、一会儿是属性;以前为了两头兼容写的
+    `x.is_valid() if callable(getattr(x, "is_valid")) else x.is_valid` 会把属性求值两次——每次都是一整遍检查
+    (165 个孔的板 2 × 90 毫秒)。直接调 OCC,和 build123d 内部做的是同一件事。
+    """
+    from OCP.BRepCheck import BRepCheck_Analyzer
+
+    return bool(BRepCheck_Analyzer(shape.wrapped).IsValid())
+
+
 def measure(shape):
-    bb = shape.bounding_box()
+    """要先 mesh()。"""
+    faces = shape.faces()
+    lo, hi = bounds(shape, faces)
     solids = shape.solids()
     com = None
     try:
@@ -175,17 +257,23 @@ def measure(shape):
         com = [c.X, c.Y, c.Z]
     except Exception:
         pass
+    try:
+        contact, overhang = printability(faces, lo[2])
+    except Exception:  # 量不出来不该让整次建模失败:这两项只是提示
+        contact = overhang = None
     return {
-        "bbox_min": [bb.min.X, bb.min.Y, bb.min.Z],
-        "bbox_max": [bb.max.X, bb.max.Y, bb.max.Z],
-        "size": [bb.size.X, bb.size.Y, bb.size.Z],
+        "bbox_min": lo,
+        "bbox_max": hi,
+        "size": [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]],
         "volume_mm3": float(sum(s.volume for s in solids)),
         "area_mm2": float(shape.area),
         "solids": len(solids),
-        "faces": len(shape.faces()),
+        "faces": len(faces),
         "edges": len(shape.edges()),
-        "is_valid": bool(shape.is_valid()) if callable(getattr(shape, "is_valid", None)) else bool(shape.is_valid),
+        "is_valid": is_valid(shape),
         "center": com,
+        "bed_contact_mm2": contact,
+        "overhang_mm2": overhang,
     }
 
 
@@ -197,7 +285,13 @@ def export(shape, out_dir, kinds, tol, ang):
         bd.export_step(shape, os.path.join(out_dir, "model.step"))
         files["step"] = "model.step"
     if "stl" in kinds:
-        bd.export_stl(shape, os.path.join(out_dir, "model.stl"), tolerance=tol, angular_tolerance=ang)
+        # 网格已经在 mesh() 里算好了:直接写,不让 build123d 的 export_stl 按它自己的(相对)参数再三角化一遍
+        from OCP.StlAPI import StlAPI_Writer
+
+        writer = StlAPI_Writer()
+        writer.ASCIIMode = False
+        if not writer.Write(shape.wrapped, os.path.join(out_dir, "model.stl")):
+            raise RuntimeError("STL writer failed")
         files["stl"] = "model.stl"
     if "3mf" in kinds:
         mesher = bd.Mesher()
@@ -236,10 +330,12 @@ def run(job):
     except Exception as e:  # 用户代码里的任何异常
         return fail("exec", e, line=user_line(e.__traceback__), tb=user_traceback(e, job["code"]))
 
+    tol, ang = float(job.get("stl_tolerance", 0.02)), float(job.get("stl_angular_tolerance", 0.2))
     try:
         if "result" not in ns:
             raise Rejected("the script must assign the final shape to a variable named `result`")
         shape = as_shape(ns["result"])
+        mesh(shape, tol, ang)
         metrics = measure(shape)
         if metrics["solids"] == 0 or metrics["volume_mm3"] <= 0:
             raise Rejected("`result` has no solid volume (did a boolean operation remove everything?)")
@@ -247,8 +343,7 @@ def run(job):
         return fail("result", e)
 
     try:
-        files = export(shape, out_dir, job.get("exports") or ["step", "stl"],
-                       float(job.get("stl_tolerance", 0.01)), float(job.get("stl_angular_tolerance", 0.1)))
+        files = export(shape, out_dir, job.get("exports") or ["step", "stl"], tol, ang)
     except Exception as e:
         return fail("export", e, tb=traceback.format_exc()[-2000:])
 

@@ -30,6 +30,7 @@ result = base - holes
 - Minimum wall 1.2 mm. Avoid overhangs steeper than 45 degrees; prefer chamfers over fillets on bottom edges.
 - Every added feature must overlap or touch the body so the boolean union gives one solid. Cutting tools must be at least as tall as what they cut through (add 0.01–1 mm of over-travel).
 - Fillet/chamfer radii must be smaller than half of the thinnest adjacent wall, otherwise OpenCascade fails. Apply fillets late, after the booleans.
+- Repeated features (holes, slots, ribs, dividers, teeth) go into ONE boolean: build a list, then `body - [list]` or `body + [list]` (an empty list is fine). NEVER write `for ...: body = body - tool` — every pass re-computes the whole body (165 holes: 4.4 s in a loop, 0.2 s as one list), and a script that runs longer than 90 s is killed.
 
 ## build123d 0.12 cheat sheet (algebra mode — use this style)
 
@@ -89,8 +90,7 @@ body = offset(outer, amount=-wall, openings=outer.faces().sort_by(Axis.Z)[-1])
 # ---- FEATURE: dividers ----
 pitch = (length - 2 * wall) / (divider_count + 1)
 divider = Box(wall, width - wall, height - wall, align=(Align.CENTER, Align.CENTER, Align.MIN))
-for i in range(divider_count):
-    body = body + Pos(-length / 2 + wall + pitch * (i + 1), 0, wall / 2) * divider
+body = body + [Pos(-length / 2 + wall + pitch * (i + 1), 0, wall / 2) * divider for i in range(divider_count)]
 
 # ---- FEATURE: drain_holes ----
 hole = Cylinder(hole_diameter / 2, wall + 2, align=(Align.CENTER, Align.CENTER, Align.MIN))
@@ -104,6 +104,6 @@ body = chamfer(body.edges().group_by(Axis.Z)[0], length=0.6)
 result = body
 ```
 
-Note how the dividers are slightly longer than the inner cavity and start inside the floor (they overlap the walls and floor, so the union is one solid), and how the hole cutter starts below z = 0 and is taller than the floor.
+Note how the dividers are slightly longer than the inner cavity and start inside the floor (they overlap the walls and floor, so the union is one solid), how the hole cutter starts below z = 0 and is taller than the floor, and how all dividers are fused — and all holes cut — as one list in a single boolean.
 
 Do not invent API names. If unsure whether something exists, build it from the primitives above.

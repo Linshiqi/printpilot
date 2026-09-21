@@ -456,8 +456,11 @@ async fn rebuild(ctx: Arc<AppCtx>, id: String, code: String, source: &'static st
     use pp_agent::CadExecutor as _;
     let design = db(ctx.db.get_design(&id))?;
     let parent = design.current_version_id.as_deref().map(|v| db(ctx.db.get_cad_version(v))).transpose()?;
-    let exec = EngineExecutor::new(&ctx, pp_cad::CancelFlag::default())?;
-    exec.execute(&code).await.map_err(cad_err)?;
+    // 手动运行 / 改参数也能中途停(界面上忙的时候一直有「停止」):手写的代码里有个死循环,
+    // 不该让人干等 90 秒超时——这期间引擎也被它占着。和对话一样:只有跑脚本这一段可以取消,入库那一段不包
+    let turn_guard = ctx.turns.begin(&format!("design:{id}"))?;
+    let exec = EngineExecutor::new(&ctx, turn_guard.flag.clone())?;
+    turn_guard.run(async { exec.execute(&code).await.map_err(cad_err) }).await?;
     let output = exec.take_output(&code).ok_or_else(|| cad_err(CadError::Protocol("no output".into())))?;
     tauri::async_runtime::spawn_blocking(move || {
         let lineage = Lineage {

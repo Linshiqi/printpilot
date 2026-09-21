@@ -12,7 +12,7 @@ use crate::i18n_util::current_locale;
 use crate::icon::IconKind;
 use crate::ipc::{self, cmd};
 use crate::state::AppState;
-use crate::ui::{Button, ButtonVariant, IconButton, NumInput, SectionTitle, TextInput};
+use crate::ui::{item, separator, Button, ButtonVariant, IconButton, NumInput, SectionTitle, TextInput};
 
 #[component]
 fn Cell(#[prop(into)] label: Signal<String>, children: Children) -> impl IntoView {
@@ -185,8 +185,23 @@ pub fn ProfilesPanel(
                 <For each=move || printers.get() key=|p| serde_json::to_string(p).unwrap_or_default() let:p>
                     {
                         let (for_edit, id) = (p.clone(), p.id.clone());
+                        let (menu_edit, menu_id) = (p.clone(), p.id.clone());
                         view! {
-                            <div class="flex items-center gap-2 px-2.5 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700">
+                            <div
+                                class="flex items-center gap-2 px-2.5 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700"
+                                on:contextmenu=move |ev| {
+                                    let l = current_locale();
+                                    let (target, id) = (menu_edit.clone(), menu_id.clone());
+                                    state.open_menu(
+                                        &ev,
+                                        vec![
+                                            item(td_string!(l, pricing.edit), IconKind::Pencil, move || edit_printer(target.clone())),
+                                            separator(),
+                                            item(td_string!(l, menu.delete), IconKind::Trash, move || delete_printer(id.clone())).danger(),
+                                        ],
+                                    );
+                                }
+                            >
                                 <div class="min-w-0 flex-1">
                                     <div class="text-xs font-medium truncate text-gray-800 dark:text-gray-100">{p.name.clone()}</div>
                                     <div class="text-[11px] tabular-nums text-gray-400">
@@ -223,8 +238,23 @@ pub fn ProfilesPanel(
                 <For each=move || materials.get() key=|m| serde_json::to_string(m).unwrap_or_default() let:m>
                     {
                         let (for_edit, id) = (m.clone(), m.id.clone());
+                        let (menu_edit, menu_id) = (m.clone(), m.id.clone());
                         view! {
-                            <div class="flex items-center gap-2 px-2.5 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700">
+                            <div
+                                class="flex items-center gap-2 px-2.5 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700"
+                                on:contextmenu=move |ev| {
+                                    let l = current_locale();
+                                    let (target, id) = (menu_edit.clone(), menu_id.clone());
+                                    state.open_menu(
+                                        &ev,
+                                        vec![
+                                            item(td_string!(l, pricing.edit), IconKind::Pencil, move || edit_material(target.clone())),
+                                            separator(),
+                                            item(td_string!(l, menu.delete), IconKind::Trash, move || delete_material(id.clone())).danger(),
+                                        ],
+                                    );
+                                }
+                            >
                                 <div class="min-w-0 flex-1">
                                     <div class="text-xs font-medium truncate text-gray-800 dark:text-gray-100">{format!("{} · {}", m.name, m.kind)}</div>
                                     <div class="text-[11px] tabular-nums text-gray-400">{format!("¥{:.1}/kg · {:.2} g/cm³", m.yuan_per_kg, m.density)}</div>

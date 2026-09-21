@@ -17,7 +17,8 @@
   python scripts/cdp.py watch [秒]             # 刷新页面从零盯:第一条 panic(带 Rust 源位置)
   python scripts/cdp.py click-btn "<正则>"     # 按 aria-label/title 找按钮点一下,抓第一条异常全栈
   python scripts/cdp.py click <x> <y>          # 按坐标点
-  python scripts/cdp.py drag <x1> <y1> <x2> <y2>  # 真实鼠标拖拽(看板卡片换列)
+  python scripts/cdp.py rclick <x> <y>         # 按坐标点右键(真实输入:右键菜单里的剪切 / 复制要「用户手势」,合成事件不算)
+  python scripts/cdp.py drag <x1> <y1> <x2> <y2>  # 真实鼠标拖拽(看板卡片换列);rdrag = 按着右键拖
   python scripts/cdp.py type "<文本>"           # 往当前焦点输入文字
   python scripts/cdp.py shot <文件.png>         # 截图存盘
 
@@ -317,23 +318,27 @@ def main():
         print("click:", c.eval(js))
         c.drain(3)
         show_first_exception(c.events)
-    elif cmd == "click":
+    elif cmd in ("click", "rclick"):
         x, y = float(sys.argv[2]), float(sys.argv[3])
+        button, buttons = ("right", 2) if cmd == "rclick" else ("left", 1)
+        c.call("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y})
         for typ in ("mousePressed", "mouseReleased"):
-            c.call("Input.dispatchMouseEvent", {"type": typ, "x": x, "y": y, "button": "left", "clickCount": 1})
+            c.call("Input.dispatchMouseEvent", {"type": typ, "x": x, "y": y, "button": button, "buttons": buttons if typ == "mousePressed" else 0, "clickCount": 1})
         c.drain(1.5)
         show_events(c.events)
-    elif cmd == "drag":
-        # 真实鼠标事件(不是合成事件):pointer_drag.rs 要求 isPrimary、要过 6px 阈值、要能 setPointerCapture
+    elif cmd in ("drag", "rdrag"):
+        # 真实鼠标事件(不是合成事件):pointer_drag.rs 要求 isPrimary、要过 6px 阈值、要能 setPointerCapture。
+        # rdrag = 按着右键拖(3D 视图里是平移视角;松手之后不该弹右键菜单)
         x1, y1, x2, y2 = (float(v) for v in sys.argv[2:6])
+        button, buttons = ("right", 2) if cmd == "rdrag" else ("left", 1)
         c.call("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x1, "y": y1})
-        c.call("Input.dispatchMouseEvent", {"type": "mousePressed", "x": x1, "y": y1, "button": "left", "buttons": 1, "clickCount": 1})
+        c.call("Input.dispatchMouseEvent", {"type": "mousePressed", "x": x1, "y": y1, "button": button, "buttons": buttons, "clickCount": 1})
         steps = 12
         for i in range(1, steps + 1):
             x, y = x1 + (x2 - x1) * i / steps, y1 + (y2 - y1) * i / steps
-            c.call("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y, "button": "left", "buttons": 1})
+            c.call("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y, "button": button, "buttons": buttons})
             time.sleep(0.02)
-        c.call("Input.dispatchMouseEvent", {"type": "mouseReleased", "x": x2, "y": y2, "button": "left", "buttons": 0, "clickCount": 1})
+        c.call("Input.dispatchMouseEvent", {"type": "mouseReleased", "x": x2, "y": y2, "button": button, "buttons": 0, "clickCount": 1})
         c.drain(1.5)
         show_events(c.events)
     elif cmd == "type":

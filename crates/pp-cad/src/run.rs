@@ -90,7 +90,7 @@ impl PartialEq for CancelFlag {
 pub struct RunOptions {
     /// `step` / `stl` / `3mf`
     pub exports: Vec<String>,
-    /// STL / 3MF 的线性偏差(毫米)。0.01 对 FDM 已经远超打印精度
+    /// STL 的**绝对**弦差(毫米;执行器自己三角化,不用 build123d 的相对偏差)。0.02 对 FDM 已经远超打印精度
     pub stl_tolerance: f64,
     pub stl_angular_tolerance: f64,
     pub timeout: Duration,
@@ -102,8 +102,8 @@ impl Default for RunOptions {
     fn default() -> Self {
         Self {
             exports: vec!["step".into(), "stl".into()],
-            stl_tolerance: 0.01,
-            stl_angular_tolerance: 0.1,
+            stl_tolerance: 0.02,
+            stl_angular_tolerance: 0.2,
             timeout: Duration::from_secs(90),
             cancel: CancelFlag::default(),
         }

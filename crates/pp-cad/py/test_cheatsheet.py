@@ -36,7 +36,8 @@ class CheatSheet(unittest.TestCase):
         self.assertSize(self.build("result = Cylinder(5, 10, align=(Align.CENTER, Align.CENTER, Align.MIN))"), (10, 10, 10))
         self.assertSize(self.build("result = Sphere(5)"), (10, 10, 10), places=2)
         self.assertSize(self.build("result = Cone(6, 2, 10)"), (12, 12, 10), places=2)
-        self.assertSize(self.build("result = Torus(10, 2)"), (24, 24, 4), places=2)
+        # 环面的包围盒是用三角网量的(runner.bounds):只会偏小,且不超过弦差 0.02 mm
+        self.assertSize(self.build("result = Torus(10, 2)"), (24, 24, 4), places=1)
 
     # ---- placement and booleans ----
     def test_cut_fuse_intersect(self):
@@ -155,6 +156,13 @@ class CheatSheet(unittest.TestCase):
             prompt = f.read()
         section = prompt.split("## Complete example", 1)[1]
         code = re.search(r"```python\n(.*?)```", section, re.S).group(1)
+
+        # 范本里不许有「循环里做布尔」:每一轮都把整个零件重算一遍,165 个孔实测 4.4 秒 vs 一次减一批 0.2 秒。
+        # 模型是照着范本学的——范本里有一个 for,生成的代码里就到处是 for。
+        import ast
+        loops = [n.lineno for n in ast.walk(ast.parse(code)) if isinstance(n, (ast.For, ast.While))]
+        self.assertEqual(loops, [], "示例里重复的特征要写成列表、一次布尔(`body + [...]`),不要用循环")
+        self.assertIn("NEVER write `for ...: body = body - tool`", prompt)
 
         with tempfile.TemporaryDirectory() as d:
             res = runner.run({"code": code, "out_dir": d, "exports": ["none"]})

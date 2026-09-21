@@ -2,7 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
-/// 执行器量出来的指标。B-rep 的精确值,不是网格近似。
+/// 执行器量出来的指标。体积 / 面积是 B-rep 的精确值。包围盒在平面 / 圆柱 / 圆锥 / 球面上也是精确的;
+/// 环面和自由曲面上用三角网量——只会偏小、且不超过弦差 0.02 mm(原因和实测见 `runner.py` 的 `bounds`)。
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct CadMetrics {
     pub bbox_min: [f64; 3],
@@ -16,11 +17,71 @@ pub struct CadMetrics {
     pub edges: u32,
     /// OpenCascade 的 B-rep 有效性检查
     pub is_valid: bool,
+    /// 贴在打印床上的平面面积(mm²)。`None` = 这一版是旧执行器量的,没有这一项
+    #[serde(default)]
+    pub bed_contact_mm2: Option<f64>,
+    /// 离开床面、正朝下的平面(天花板 / 悬臂 / 桥)的面积(mm²):这些地方要么搭桥、要么加支撑
+    #[serde(default)]
+    pub overhang_mm2: Option<f64>,
+}
+
+/// 贴床面积小于这个数 = 零件实际上是靠一条边、一个点或一个曲面着床的(球、躺着的圆柱)。
+pub const MIN_BED_CONTACT_MM2: f64 = 1.0;
+/// 最低点离床面多远算「没贴床」。比执行器的弦差(0.02 mm)大:底部是环面 / 自由曲面的零件,
+/// 最低点是用三角网量的,会偏高最多 0.02——它不该被当成悬空。
+pub const PLATE_TOLERANCE_MM: f64 = 0.05;
+
+/// 打印时要留意的事,从指标里算出来,指标卡上一直显示。它们不喂给修复循环:
+/// 对话里用户想要一个球,就该给他一个球——只是要让他知道这个球直接打不了。
+/// (按规格**首次生成**时「没有平的底面」另外算一条问题,见 `CadProblem::NoFlatBase`。)
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PrintNote {
+    /// 没有平的底面:靠一条边、一个点或一个曲面着床
+    NoFlatBase,
+    /// 贴床面积相对零件的占地很小:首层容易粘不住,切片时加裙边(brim)
+    SmallContact { contact_mm2: f64, footprint_mm2: f64 },
+    /// 有朝下的悬空平面:要支撑,或者本来就是可以搭桥的短跨
+    Overhang { area_mm2: f64 },
 }
 
 impl CadMetrics {
     pub fn fits(&self, build: [f64; 3]) -> bool {
         self.size.iter().zip(build).all(|(s, b)| *s <= b)
+    }
+
+    /// 零件在床上的占地(包围盒的 X × Y)。
+    pub fn footprint_mm2(&self) -> f64 {
+        self.size[0] * self.size[1]
+    }
+
+    /// 零件有没有一个平的底面贴在床上。量不出来(旧版本)时当作有——不拿没有的数据去判人家不合格。
+    pub fn rests_flat(&self) -> bool {
+        self.bed_contact_mm2.is_none_or(|c| c >= MIN_BED_CONTACT_MM2)
+    }
+
+    /// 给用户的打印提醒(见 `PrintNote`)。
+    pub fn print_notes(&self) -> Vec<PrintNote> {
+        let mut notes = Vec::new();
+        let footprint = self.footprint_mm2();
+        if !self.rests_flat() {
+            notes.push(PrintNote::NoFlatBase);
+        }
+        if let Some(contact) = self.bed_contact_mm2 {
+            // 着床的面不到占地的 3%(且绝对值也不大):细腿、尖脚这类
+            if contact >= MIN_BED_CONTACT_MM2 && contact < footprint * 0.03 && contact < 400.0 {
+                notes.push(PrintNote::SmallContact {
+                    contact_mm2: contact,
+                    footprint_mm2: footprint,
+                });
+            }
+        }
+        if let Some(area) = self.overhang_mm2 {
+            // 零头不提:倒角留下的小台阶、文字的内腔
+            if area >= 25.0 {
+                notes.push(PrintNote::Overhang { area_mm2: area });
+            }
+        }
+        notes
     }
 }
 
@@ -58,7 +119,7 @@ pub struct CadScriptError {
 }
 
 impl CadScriptError {
-    /// 给模型看的修复提示。
+    /// 给模型看的修复提示:原始错误 + 用户代码的帧 + (认得出来的话)一句「这种错通常怎么修」。
     pub fn for_model(&self) -> String {
         let at = self.line.map(|l| format!(" (line {l})")).unwrap_or_default();
         let tb = if self.traceback.is_empty() {
@@ -66,7 +127,65 @@ impl CadScriptError {
         } else {
             format!("\n{}", self.traceback)
         };
-        format!("[{}] {}: {}{at}{tb}", self.stage, self.error_type, self.message)
+        let hint = self.hint().map(|h| format!("\nHint: {h}")).unwrap_or_default();
+        format!("[{}] {}: {}{at}{tb}{hint}", self.stage, self.error_type, self.message)
+    }
+
+    /// 常见失败的修法。build123d / OpenCascade 的原始报错经常说不到点子上——最典型的是
+    /// 「选择器什么都没选中」报出来是一句 `IndexError: list index out of range`。模型光看这句话只能猜,
+    /// 猜错一轮就是一次十几秒的调用。这张表里的每个签名都是在真引擎上跑出来的(`target/` 下的一次性探测脚本),
+    /// 不是凭印象写的;认不出来就不加提示,原始错误照旧给。
+    pub fn hint(&self) -> Option<&'static str> {
+        let (ty, msg) = (self.error_type.as_str(), self.message.as_str());
+        if self.stage == "validate" {
+            return None; // 白名单 / 语法错:执行器的消息本身就写了该怎么改
+        }
+        if self.stage == "result" {
+            return msg.contains("no solid volume").then_some(
+                "`result` must be a solid. A sketch or face has to be extruded first; selectors (`.edges()`, `.faces()`) return lists, not shapes; and a cutter that is bigger than the body removes everything.",
+            );
+        }
+        if msg.contains("Failed creating a fillet") {
+            return Some(
+                "the fillet does not fit. A fillet radius must be smaller than half of the thinnest adjacent wall AND shorter than the adjacent edges, and neighbouring fillets compete for the same material. Reduce the radius (derive it, e.g. `min(corner_radius, wall / 2 - 0.1)`), fillet only the edges that matter instead of `part.edges()`, and apply fillets after all booleans.",
+            );
+        }
+        if msg.contains("Failed creating a chamfer") {
+            return Some(
+                "the chamfer does not fit. Its length must be smaller than the adjacent faces allow (less than half of the thinnest wall). Reduce the length and chamfer only the edges that matter instead of `part.edges()`.",
+            );
+        }
+        match ty {
+            "IndexError" => Some(
+                "in modeling code an IndexError almost always means a selector came back with fewer items than expected: `filter_by(...)` matched nothing, or `group_by(...)` / `sort_by(...)` has fewer groups than the index asks for. `fillet()` / `chamfer()` on an EMPTY edge list fails this way too. Selectors see the shape as it is at that line (after the booleans above it): select from the shape that really has those edges, and prefer [0] / [-1] over other indexes.",
+            ),
+            "NameError" => Some(
+                "that name does not exist in build123d 0.12 (or it is a variable that was never defined). Do not invent API names; build the shape from the primitives and operations in the cheat sheet.",
+            ),
+            "AttributeError" => Some(
+                "that attribute / method does not exist on this object in build123d 0.12. Use the free functions from the cheat sheet — `fillet(...)`, `chamfer(...)`, `extrude(...)`, `offset(...)`, `mirror(...)` — instead of methods, and remember that selectors return lists.",
+            ),
+            "TypeError" if msg.contains("unsupported operand type(s) for *") => Some(
+                "locations go on the LEFT of the shape: `Pos(x, y, z) * shape`, `Pos(...) * Rot(...) * shape`. `shape * Pos(...)` is not defined.",
+            ),
+            "TypeError" => Some(
+                "wrong call signature. Use exactly the signatures from the cheat sheet, e.g. `Box(length, width, height, align=...)`, `Cylinder(radius, height, align=...)`. There is no `center=` / `centered=` flag: alignment is `align=(Align.CENTER, Align.CENTER, Align.MIN)`.",
+            ),
+            "ValueError" if msg.contains("is not a valid Align") => Some(
+                "too many positional arguments: the extra value landed in `align=`. Check the signature in the cheat sheet (`Box(length, width, height)`, `Cylinder(radius, height)`).",
+            ),
+            "ValueError" if msg.contains("No depth provided") || msg.contains("context") => Some(
+                "`Hole`, `CounterBoreHole`, `Locations` and friends are builder-mode helpers that need a `with BuildPart():` context. In algebra mode cut a hole with `body - Pos(x, y, z) * Cylinder(radius, height)`.",
+            ),
+            "ZeroDivisionError" => Some(
+                "a parameter is 0 where the code divides by it. Guard the division (e.g. `max(count, 1)`) or give that parameter a minimum of 1 in its PARAMS range.",
+            ),
+            // OpenCascade 内核的异常:StdFail_NotDone、Standard_ConstructionError、Standard_NullObject…
+            _ if ty.starts_with("StdFail_") || ty.starts_with("Standard_") => Some(
+                "the OpenCascade kernel could not compute the operation at that line. Typical causes: a revolve profile that touches or crosses the rotation axis (keep it strictly on one side, x > 0); a sweep / loft with degenerate, coplanar or self-intersecting sections; a fillet, chamfer or offset larger than the local geometry allows; booleans between exactly coincident faces (give cutters 0.01-1 mm of over-travel). Simplify that operation or build the feature from simpler primitives.",
+            ),
+            _ => None,
+        }
     }
 }
 
@@ -120,6 +239,8 @@ pub enum CadProblem {
     Invalid,
     /// 最低点不在打印床上
     OffPlate { z: f64 },
+    /// 贴着床,但没有一个平的底面:靠一条边、一个点或一个曲面着床(球、躺着的圆柱),FDM 打不成
+    NoFlatBase { contact_mm2: f64 },
     /// 包围盒和设计规格对不上
     Size { got: [f64; 3], want: [f64; 3] },
     /// 超出成型空间
@@ -150,7 +271,7 @@ impl CadProblem {
             CadProblem::Contract { detail } => detail.clone(),
             CadProblem::Script { error } => error.for_model(),
             CadProblem::Timeout { secs } => format!(
-                "The script ran longer than {secs} s and was killed. Remove unbounded loops and simplify heavy operations (fewer booleans in loops, no tiny fillets on many edges)."
+                "The script ran longer than {secs} s and was killed. The usual cause is a boolean inside a loop (`for ...: body = body - tool`): every pass re-computes the whole body. Collect the tools in a list and cut / fuse them in ONE operation (`body - [tools]`), which is 10-25x faster. Also remove unbounded loops and do not fillet hundreds of tiny edges."
             ),
             CadProblem::Solids { count: 0 } => "`result` has no solid volume. Check that the booleans do not remove everything.".to_string(),
             CadProblem::Solids { count } => format!(
@@ -159,6 +280,9 @@ impl CadProblem {
             CadProblem::Invalid => "OpenCascade reports `result` as an invalid shape (self-intersection or degenerate faces). Avoid coincident faces in booleans (give cutting tools some over-travel) and reduce fillet radii.".to_string(),
             CadProblem::OffPlate { z } => format!(
                 "The part must sit on the build plate: its lowest point is at z = {z:.3}, it has to be z = 0. Use align=(Align.CENTER, Align.CENTER, Align.MIN) for the main body and position the other features relative to it."
+            ),
+            CadProblem::NoFlatBase { contact_mm2 } => format!(
+                "The part has no flat face on the build plate (flat contact area: {contact_mm2:.1} mm2): it rests on a curved surface, an edge or a point, which cannot be printed. Give it a flat bottom at z = 0 — cut the underside flat (e.g. intersect with a box that starts at z = 0), or orient the part so that a planar face lies on the plate."
             ),
             CadProblem::Size { got, want } => format!(
                 "The bounding box is {} mm but the spec asks for {} mm (X x Y x Z). Fix the dimensions (check radius vs diameter, and whether features stick out of the body).",
@@ -313,6 +437,105 @@ mod tests {
             want: [60.0, 24.0, 18.0],
         };
         assert!(size.for_model().contains("60.0 x 24.0 x 12.0") && size.for_model().contains("60.0 x 24.0 x 18.0"));
+    }
+
+    fn script_error(stage: &str, ty: &str, message: &str) -> CadScriptError {
+        CadScriptError {
+            stage: stage.into(),
+            error_type: ty.into(),
+            message: message.into(),
+            line: Some(3),
+            traceback: String::new(),
+        }
+    }
+
+    /// 左边是真引擎(build123d 0.12 / OCP 7.9)上跑出来的原始报错,右边是提示里必须出现的关键词。
+    #[test]
+    fn common_failures_get_a_targeted_hint_and_unknown_ones_are_left_alone() {
+        let cases = [
+            ("exec", "ValueError", "Failed creating a fillet with radius of 50, try a smaller value or use max_fillet() to find the largest valid fillet radius", "half of the thinnest"),
+            ("exec", "ValueError", "Failed creating a chamfer, try a smaller length value(s)", "chamfer does not fit"),
+            ("exec", "IndexError", "list index out of range", "selector"),
+            ("exec", "NameError", "name 'RoundedBox' is not defined", "Do not invent API names"),
+            ("exec", "TypeError", "Cylinder.__init__() got an unexpected keyword argument 'centered'", "no `center=`"),
+            ("exec", "TypeError", "unsupported operand type(s) for *: 'Box' and 'Pos'", "on the LEFT"),
+            ("exec", "ValueError", "6 is not a valid Align", "too many positional arguments"),
+            ("exec", "ValueError", "No depth provided", "builder-mode"),
+            ("exec", "AttributeError", "'Box' object has no attribute 'fillet_edges'", "free functions"),
+            ("exec", "ZeroDivisionError", "division by zero", "max(count, 1)"),
+            ("exec", "StdFail_NotDone", "BRep_API: command not done", "rotation axis"),
+            ("exec", "Standard_ConstructionError", "", "OpenCascade kernel"),
+            ("result", "Rejected", "`result` has no solid volume (did a boolean operation remove everything?)", "must be a solid"),
+        ];
+        for (stage, ty, message, keyword) in cases {
+            let e = script_error(stage, ty, message);
+            let hint = e.hint().unwrap_or_else(|| panic!("{ty}: {message} 应该有提示"));
+            assert!(hint.contains(keyword), "{ty}: {message}\n  提示里应该有「{keyword}」:{hint}");
+            // 提示跟在原始错误后面,不替换它
+            let text = e.for_model();
+            assert!(text.starts_with(&format!("[{stage}] {ty}: {message}")) && text.ends_with(hint), "{text}");
+        }
+        // 认不出来的、以及执行器自己已经说清楚的,不画蛇添足
+        for (stage, ty, message) in [
+            ("exec", "ValueError", "math domain error"),
+            ("exec", "RuntimeError", "something new"),
+            ("validate", "Rejected", "import os is not allowed; use `from build123d import *` and `import math` only"),
+            ("validate", "SyntaxError", "invalid syntax"),
+            ("result", "Rejected", "the script must assign the final shape to a variable named `result`"),
+        ] {
+            let e = script_error(stage, ty, message);
+            assert_eq!(e.hint(), None, "{ty}: {message}");
+            assert!(!e.for_model().contains("Hint:"));
+        }
+    }
+
+    #[test]
+    fn a_part_without_a_flat_base_is_a_problem_but_thin_feet_and_overhangs_are_only_notes() {
+        let measured = |contact: f64, overhang: f64| CadMetrics {
+            size: [60.0, 40.0, 24.0],
+            bed_contact_mm2: Some(contact),
+            overhang_mm2: Some(overhang),
+            ..Default::default()
+        };
+        // 球 / 躺着的圆柱:没有平的底面
+        assert!(!measured(0.0, 0.0).rests_flat());
+        assert_eq!(measured(0.0, 0.0).print_notes(), vec![PrintNote::NoFlatBase]);
+        // 实心的盒子:什么都不用提
+        assert!(measured(2400.0, 0.0).rests_flat());
+        assert!(measured(2400.0, 0.0).print_notes().is_empty());
+        // 四条 3 × 3 的细腿 + 桌面底下悬空
+        let table = measured(36.0, 2364.0);
+        assert!(table.rests_flat());
+        assert_eq!(
+            table.print_notes(),
+            vec![
+                PrintNote::SmallContact { contact_mm2: 36.0, footprint_mm2: 2400.0 },
+                PrintNote::Overhang { area_mm2: 2364.0 }
+            ]
+        );
+        // 大零件上一块不小的着床面:占比低也不提(绝对面积够粘住了)
+        let big = CadMetrics {
+            size: [200.0, 200.0, 50.0],
+            bed_contact_mm2: Some(900.0),
+            overhang_mm2: Some(4.0),
+            ..Default::default()
+        };
+        assert!(big.print_notes().is_empty(), "倒角留下的零头悬空也不提");
+        // 旧版本没量这两项:不判、不提
+        let old = CadMetrics {
+            size: [60.0, 40.0, 24.0],
+            ..Default::default()
+        };
+        assert!(old.rests_flat() && old.print_notes().is_empty());
+        // 旧版本存下来的 JSON 里没有这两个字段
+        let wire = r#"{"bbox_min":[0,0,0],"bbox_max":[1,1,1],"size":[1,1,1],"volume_mm3":1,"area_mm2":6,"solids":1,"faces":6,"edges":12,"is_valid":true}"#;
+        let parsed: CadMetrics = serde_json::from_str(wire).unwrap();
+        assert_eq!((parsed.bed_contact_mm2, parsed.overhang_mm2), (None, None));
+
+        let p = CadProblem::NoFlatBase { contact_mm2: 0.0 };
+        assert_eq!(serde_json::to_value(&p).unwrap(), serde_json::json!({"kind": "no_flat_base", "contact_mm2": 0.0}));
+        assert!(p.for_model().contains("flat bottom at z = 0"));
+        assert!(CadProblem::Timeout { secs: 90 }.for_model().contains("body - [tools]"));
     }
 
     #[test]

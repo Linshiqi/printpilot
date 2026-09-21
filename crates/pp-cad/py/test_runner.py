@@ -131,6 +131,70 @@ result = p
         self.assertTrue(r["ok"], r)
         self.assertIn("3mf", r["files"])
 
+    def test_analytic_faces_are_measured_exactly_and_curved_ones_to_mesh_accuracy(self):
+        # 躺着的圆柱:最低点落在圆柱面上。解析面走精确算法——量出来正好贴床,不会被误判成「悬空」
+        r = self.run_code("from build123d import *\nresult = Pos(0, 0, 10) * Rot(90, 0, 0) * Cylinder(10, 40)")
+        self.assertTrue(r["ok"], r)
+        self.assertEqual([round(v, 6) for v in r["metrics"]["size"]], [20.0, 40.0, 20.0])
+        self.assertAlmostEqual(r["metrics"]["bbox_min"][2], 0.0, places=6)
+        # 环面走三角网:只会偏小,且不超过弦差(每侧 0.02)
+        r = self.run_code("from build123d import *\nresult = Torus(30, 6)")
+        for got, want in zip(r["metrics"]["size"], (72.0, 72.0, 12.0)):
+            self.assertLessEqual(got, want + 1e-9)
+            self.assertGreater(got, want - 0.05)
+
+    def test_fillets_do_not_inflate_the_size(self):
+        # 圆角拐弯处是环面:build123d 那种「快但不精确」的包围盒会在这里偏大约 1 mm
+        r = self.run_code("""
+from build123d import *
+L, W, H, wall, r = 120, 80, 30, 2.4, 6
+outer = fillet(Box(L, W, H, align=(Align.CENTER, Align.CENTER, Align.MIN)).edges().filter_by(Axis.Z), r)
+inner = fillet((Pos(0, 0, wall) * Box(L - 2 * wall, W - 2 * wall, H, align=(Align.CENTER, Align.CENTER, Align.MIN))).edges().filter_by(Axis.Z), r - wall)
+result = fillet((outer - inner).edges().group_by(Axis.Z)[-1], 0.8)
+""")
+        self.assertTrue(r["ok"], r)
+        self.assertEqual([round(v, 4) for v in r["metrics"]["size"]], [120.0, 80.0, 30.0])
+        self.assertAlmostEqual(r["metrics"]["bbox_min"][2], 0.0, places=6)
+        self.assertTrue(r["metrics"]["is_valid"])
+
+    def test_stl_is_binary_and_meshed_with_an_absolute_chord_tolerance(self):
+        # build123d 自带的 export_stl 用相对偏差:这只 60 mm 的放样花瓶只有约 3800 个三角面、弦差约 0.6 mm
+        r = self.run_code(
+            "from build123d import *\n"
+            "result = loft([Pos(0, 0, 0) * Circle(20), Pos(0, 0, 30) * Circle(32), Pos(0, 0, 60) * Circle(14)])",
+            exports=("stl",))
+        self.assertTrue(r["ok"], r)
+        path = os.path.join(self.tmp.name, r["files"]["stl"])
+        with open(path, "rb") as f:
+            triangles = int.from_bytes(f.read(84)[80:84], "little")
+        self.assertEqual(os.path.getsize(path), 84 + 50 * triangles)  # 二进制 STL 的长度是定死的
+        self.assertGreater(triangles, 8000)
+        # 粗一档的公差 → 三角面明显变少:公差确实传到了三角化那一步
+        coarse = runner.run({"code": "from build123d import *\nresult = loft([Pos(0, 0, 0) * Circle(20), Pos(0, 0, 30) * Circle(32), Pos(0, 0, 60) * Circle(14)])",
+                             "out_dir": self.tmp.name, "exports": ["stl"], "stl_tolerance": 0.2, "stl_angular_tolerance": 0.5})
+        with open(path, "rb") as f:
+            self.assertLess(int.from_bytes(f.read(84)[80:84], "little"), triangles / 2)
+        self.assertTrue(coarse["ok"], coarse)
+
+    def test_printability_measures_bed_contact_and_flat_overhangs(self):
+        # 一张桌子:四条腿着床,桌面底下是悬空的平面
+        r = self.run_code("""
+from build123d import *
+top = Pos(0, 0, 20) * Box(60, 40, 4, align=(Align.CENTER, Align.CENTER, Align.MIN))
+legs = [Pos(x, y, 0) * Box(6, 6, 20, align=(Align.CENTER, Align.CENTER, Align.MIN)) for x in (-27, 27) for y in (-17, 17)]
+result = top + legs
+""")
+        self.assertTrue(r["ok"], r)
+        self.assertAlmostEqual(r["metrics"]["bed_contact_mm2"], 4 * 36, places=3)
+        self.assertAlmostEqual(r["metrics"]["overhang_mm2"], 60 * 40 - 4 * 36, places=3)
+        # 实心的盒子:整个底面着床,没有悬空
+        r = self.run_code("from build123d import *\nresult = Box(30, 20, 10, align=(Align.CENTER, Align.CENTER, Align.MIN))")
+        self.assertAlmostEqual(r["metrics"]["bed_contact_mm2"], 600, places=3)
+        self.assertAlmostEqual(r["metrics"]["overhang_mm2"], 0, places=6)
+        # 球:只有一个点着床
+        r = self.run_code("from build123d import *\nresult = Pos(0, 0, 10) * Sphere(10)")
+        self.assertAlmostEqual(r["metrics"]["bed_contact_mm2"], 0, places=6)
+
     def test_runtime_errors_point_at_the_users_line_without_library_frames(self):
         r = self.run_code("""
 from build123d import *

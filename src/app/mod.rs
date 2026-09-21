@@ -11,7 +11,7 @@ use crate::icon::IconKind;
 use crate::ipc::{self, cmd};
 use crate::state::{AppState, Route};
 use crate::theme::{apply_theme, get_pref, set_pref};
-use crate::ui::Toasts;
+use crate::ui::{ContextMenuHost, Toasts};
 use crate::view::board::BoardView;
 use crate::view::imagery::ImageryView;
 use crate::view::lab::LabView;
@@ -203,6 +203,8 @@ pub fn App() -> impl IntoView {
     listen_cad_stream(state);
     listen_cad_engine_progress(state);
     listen_image_progress(state);
+    // 浏览器自带的右键菜单一律拦掉,换成应用自己的(ui::context_menu)
+    crate::ui::context_menu::install(state);
     spawn_local(async move {
         match ipc::call_no_args::<AppInfo>(cmd::APP_INFO).await {
             Ok(info) => state.app_info.set(Some(info)),
@@ -238,6 +240,7 @@ pub fn App() -> impl IntoView {
             </main>
             <ProjectDrawer state=state/>
             <Toasts state=state/>
+            <ContextMenuHost state=state/>
         </div>
     }
 }

@@ -13,7 +13,8 @@ use crate::i18n::use_i18n;
 use crate::i18n_util::current_locale;
 use crate::icon::{Icon, IconKind};
 use crate::ipc;
-use crate::ui::{Badge, Button, ButtonVariant, IconButton, Segmented, Toggle, Tone};
+use crate::state::AppState;
+use crate::ui::{basics, copy_entry, item, Badge, Button, ButtonVariant, IconButton, Segmented, Toggle, Tone};
 use crate::utils::fmt_mm;
 use crate::viewer3d::Pick;
 
@@ -54,6 +55,8 @@ pub fn ChatPane(
     actions: ChatActions,
 ) -> impl IntoView {
     let i18n = use_i18n();
+    // 右键菜单要用;必须在组件体里取——事件回调里没有响应式上下文,`expect_context` 会 panic
+    let state = expect_context::<AppState>();
     let has_model = move || design.with(|d| d.as_ref().is_some_and(|d| d.current_version_id.is_some()));
     // 只有最后一张规格卡上的按钮是活的:旧规格已经被后面的话修正过了
     let last_spec_id = Memo::new(move |_| {
@@ -113,7 +116,32 @@ pub fn ChatPane(
                     </div>
                 </Show>
                 <For each=move || messages.get() key=|m| m.id.clone() let:m>
-                    <MessageView msg=m last_spec_id=last_spec_id current_version=current_version busy=busy has_model=Signal::derive(has_model) actions=actions/>
+                    {
+                        // 右键一条消息:复制这段话 / 切到它产生的那一版 / 把没改成的代码载入编辑器
+                        let said = StoredValue::new(m.content.clone());
+                        let version = StoredValue::new(m.version_id.clone());
+                        let failed_code = StoredValue::new((m.kind == MsgKind::Failed).then(|| m.extra.code.clone()).flatten());
+                        let menu = move |ev: web_sys::MouseEvent| {
+                            let l = current_locale();
+                            let mut entries = basics(state, &ev);
+                            if !said.with_value(|s| s.trim().is_empty()) {
+                                entries.push(copy_entry(state, td_string!(l, menu.copy_text), said.get_value()));
+                            }
+                            if let Some(v) = version.get_value() {
+                                let is_current = current_version.with_untracked(|c| c.as_deref() == Some(v.as_str()));
+                                entries.push(item(td_string!(l, studio.menu_use_version), IconKind::Check, move || actions.select_version.run((v.clone(),))).disabled_if(is_current));
+                            }
+                            if let Some(code) = failed_code.get_value() {
+                                entries.push(item(td_string!(l, studio.load_failed_code), IconKind::Code, move || actions.load_code.run((code.clone(),))));
+                            }
+                            state.open_menu(&ev, entries);
+                        };
+                        view! {
+                            <div on:contextmenu=menu>
+                                <MessageView msg=m last_spec_id=last_spec_id current_version=current_version busy=busy has_model=Signal::derive(has_model) actions=actions/>
+                            </div>
+                        }
+                    }
                 </For>
                 <Show when=move || busy.get()>
                     // ---- 模型正在说的话(流式):先是思考的尾巴,然后是那句话,写到代码时只报行数 ----

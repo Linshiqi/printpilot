@@ -30,6 +30,10 @@ extern "C" {
     #[wasm_bindgen(js_name = "snapshot")]
     pub fn snapshot(container_id: &str) -> String;
 
+    /// 镜头回到默认视角并把模型框满
+    #[wasm_bindgen(js_name = "resetView")]
+    pub fn reset_view(container_id: &str);
+
     /// 棱线叠加(CAD 零件的孔、槽、倒角靠它才看得清)
     #[wasm_bindgen(js_name = "setEdges")]
     pub fn set_edges(container_id: &str, enabled: bool);

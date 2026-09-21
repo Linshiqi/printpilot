@@ -24,7 +24,9 @@ use crate::icon::{Icon, IconKind};
 use crate::ipc::{self, cmd};
 use crate::state::{AppState, Handoff};
 use crate::theme::{get_pref, set_pref, Theme};
-use crate::ui::{Badge, Button, ButtonVariant, Card, Dialog, DialogFooter, EmptyState, IconButton, Segmented, Toggle, Tone};
+use crate::ui::{
+    basics, copy_entry, image_entries, item, separator, toggle, Badge, Button, ButtonVariant, Card, Dialog, DialogFooter, EmptyState, IconButton, Segmented, Toggle, Tone,
+};
 use crate::utils::fmt_mm;
 use crate::viewer3d::{self, Pick, PickHandler};
 use chat::{ChatActions, ChatPane};
@@ -86,7 +88,11 @@ pub fn StudioView(state: AppState) -> impl IntoView {
     let spec_dialog = RwSignal::new(false);
     let spec_draft = RwSignal::new(None::<SpecDraft>);
     let delete_dialog = RwSignal::new(false);
+    // 要删的是哪个设计(`None` = 打开着的那个)。右键菜单可以删列表里任意一个,不用先打开它
+    let delete_target = RwSignal::new(None::<String>);
     let renaming = RwSignal::new(None::<String>);
+    // 右键菜单点了「重命名」、但那个设计还没打开:先打开,载入之后再进入改名
+    let rename_pending = StoredValue::new(None::<String>);
 
     let viewer_ready = RwSignal::new(false);
     let viewer_error = RwSignal::new(None::<String>);
@@ -177,8 +183,11 @@ pub fn StudioView(state: AppState) -> impl IntoView {
         loaded_id.set_value(None);
         messages.set(d.messages);
         versions.set(d.versions);
+        let rename_now = (rename_pending.get_value().as_deref() == Some(d_id.as_str())).then(|| d.design.name.clone());
+        rename_pending.set_value(None);
         design.set(Some(d.design));
         pane.set(Pane::Chat);
+        renaming.set(rename_now);
     };
     let open = move |id: String| {
         spawn_local(async move {
@@ -423,16 +432,22 @@ pub fn StudioView(state: AppState) -> impl IntoView {
         });
     };
     let delete_design = move || {
-        let Some(id) = design_id() else { return };
+        let Some(id) = delete_target.get_untracked().or_else(design_id) else { return };
+        let was_open = design_id().as_deref() == Some(id.as_str());
         delete_dialog.set(false);
+        delete_target.set(None);
         spawn_local(async move {
             match ipc::call_unit(cmd::DESIGN_DELETE, &serde_json::json!({ "id": id })).await {
                 Ok(()) => {
+                    designs.update(|l| l.retain(|d| d.id != id));
+                    // 删的是列表里别的设计:打开着的这个不受影响
+                    if !was_open {
+                        return;
+                    }
                     design.set(None);
                     messages.set(Vec::new());
                     versions.set(Vec::new());
                     code.set(String::new());
-                    designs.update(|l| l.retain(|d| d.id != id));
                     if let Some(next) = designs.with_untracked(|l| l.first().map(|d| d.id.clone())) {
                         open(next);
                     }
@@ -440,6 +455,24 @@ pub fn StudioView(state: AppState) -> impl IntoView {
                 Err(e) => state.notify_error(e),
             }
         });
+    };
+    // ---- 右键菜单用的:对列表里任意一个设计操作 ----
+    let start_rename = move |id: String| {
+        if design_id().as_deref() == Some(id.as_str()) {
+            renaming.set(design.with_untracked(|d| d.as_ref().map(|d| d.name.clone())));
+        } else {
+            rename_pending.set_value(Some(id.clone()));
+            open(id);
+        }
+    };
+    let ask_delete = move |id: String| {
+        delete_target.set(Some(id));
+        delete_dialog.set(true);
+    };
+    // 删除对话框里写明要删的是哪一个(右键删的可能不是打开着的那个)
+    let delete_name = move || {
+        let id = delete_target.get().or_else(|| design.with(|d| d.as_ref().map(|d| d.id.clone())));
+        id.and_then(|id| designs.with(|l| l.iter().find(|d| d.id == id).map(|d| d.name.clone()))).unwrap_or_default()
     };
     let remove_reference = move |asset_id: String| {
         let Some(id) = design_id() else { return };
@@ -471,6 +504,72 @@ pub fn StudioView(state: AppState) -> impl IntoView {
                 state.notify_error(e);
             }
         });
+    };
+
+    // 改名框一出现就拿到焦点并全选(从右键菜单进来时,没有任何点击会落在它上面)
+    let rename_input = NodeRef::<leptos::html::Input>::new();
+    Effect::new(move |_| {
+        if renaming.with(Option::is_some) {
+            if let Some(input) = rename_input.get() {
+                let _ = input.focus();
+                input.select();
+            }
+        }
+    });
+
+    // ---- 3D 视图的右键菜单 ----
+    // 右键拖动是平移视角(OrbitControls),拖完不该弹菜单。所以记下右键按下的位置:松手时离它超过几个像素 = 刚才是在拖。
+    // `contextmenu` 什么时候来,各平台不一样:Windows 在**松手**之后(这时 `buttons` 已经是 0),macOS / Linux 在**按下**的那一刻
+    // (右键还按着)。后一种情况下还不知道是点还是拖——先记一笔,等 `pointerup` 再决定。
+    let right_down = StoredValue::new(None::<(i32, i32)>);
+    let menu_on_release = StoredValue::new(false);
+    let viewer_pointer_down = move |ev: web_sys::PointerEvent| {
+        if ev.button() == 2 {
+            right_down.set_value(Some((ev.client_x(), ev.client_y())));
+            menu_on_release.set_value(false);
+        }
+    };
+    let open_viewer_menu = move |ev: &web_sys::MouseEvent| {
+        let dragged = right_down.get_value().is_some_and(|(x, y)| (ev.client_x() - x).abs() > 4 || (ev.client_y() - y).abs() > 4);
+        right_down.set_value(None);
+        if dragged {
+            state.open_menu(ev, Vec::new());
+            return;
+        }
+        let l = current_locale();
+        let off = busy.get_untracked() || !has_model.get_untracked();
+        // 视图左上角的尺寸是可以选中的文字:选中了就先给「复制」
+        let mut entries = basics(state, ev);
+        entries.extend(
+            vec![
+                item(td_string!(l, studio.menu_reset_view), IconKind::Rotate, || viewer3d::reset_view(VIEWER_ID)).disabled_if(!has_model.get_untracked()),
+                separator(),
+                toggle(td_string!(l, cad.edges), edges.get_untracked(), move || edges.update(|v| *v = !*v)),
+                toggle(td_string!(l, lab.show_bed), show_bed.get_untracked(), move || show_bed.update(|v| *v = !*v)),
+                toggle(td_string!(l, studio.menu_show_code), show_code.get_untracked(), move || show_code.update(|v| *v = !*v)),
+                separator(),
+                item(td_string!(l, studio.menu_export, format = "STEP"), IconKind::Download, move || export("step")).disabled_if(off),
+                item(td_string!(l, studio.menu_export, format = "STL"), IconKind::Download, move || export("stl")).disabled_if(off),
+                item(td_string!(l, studio.menu_export, format = "3MF"), IconKind::Download, move || export("3mf")).disabled_if(off),
+                item(td_string!(l, studio.menu_open_slicer), IconKind::External, open_external).disabled_if(off),
+            ],
+        );
+        state.open_menu(ev, entries);
+    };
+    let viewer_menu = move |ev: web_sys::MouseEvent| {
+        if ev.buttons() & 2 != 0 {
+            // 右键还按着(macOS / Linux):浏览器的菜单照样拦掉,我们的等松手
+            state.open_menu(&ev, Vec::new());
+            menu_on_release.set_value(true);
+            return;
+        }
+        open_viewer_menu(&ev);
+    };
+    let viewer_pointer_up = move |ev: web_sys::PointerEvent| {
+        if ev.button() == 2 && menu_on_release.get_value() {
+            menu_on_release.set_value(false);
+            open_viewer_menu(&ev);
+        }
     };
 
     // ---- 3D 视图 ----
@@ -607,7 +706,7 @@ pub fn StudioView(state: AppState) -> impl IntoView {
                             <p class="p-3 text-xs leading-relaxed text-gray-400">{move || t_string!(i18n, studio.no_designs)}</p>
                         </Show>
                         <For each=move || designs.get() key=|d| (d.id.clone(), d.updated_at, d.thumb.is_some(), d.name.clone()) let:row>
-                            <DesignRow row=row design=design on_open=open/>
+                            <DesignRow state=state row=row design=design on_open=open on_rename=start_rename on_delete=ask_delete/>
                         </For>
                     </div>
                 </aside>
@@ -628,6 +727,7 @@ pub fn StudioView(state: AppState) -> impl IntoView {
                                 Some(_) => view! {
                                     <input
                                         type="text"
+                                        node_ref=rename_input
                                         class="w-48 h-7 px-2 rounded-md border border-brand bg-white dark:bg-gray-900 text-sm text-gray-900 dark:text-gray-100 focus:outline-none"
                                         prop:value=move || renaming.get().unwrap_or_default()
                                         on:input=move |e| renaming.set(Some(event_target_value(&e)))
@@ -695,9 +795,16 @@ pub fn StudioView(state: AppState) -> impl IntoView {
                                 <Icon kind=IconKind::Code class="w-3.5 h-3.5"/>
                                 {move || t_string!(i18n, cad.show_code)}
                             </label>
-                            <IconButton icon=IconKind::Trash label=move || t_string!(i18n, studio.delete_design) on_click=move || delete_dialog.set(true)/>
+                            <IconButton
+                                icon=IconKind::Trash
+                                label=move || t_string!(i18n, studio.delete_design)
+                                on_click=move || {
+                                    delete_target.set(None);
+                                    delete_dialog.set(true);
+                                }
+                            />
                         </div>
-                        <div class="relative flex-1 min-h-0">
+                        <div class="relative flex-1 min-h-0" on:pointerdown=viewer_pointer_down on:pointerup=viewer_pointer_up on:contextmenu=viewer_menu>
                             <div id=VIEWER_ID class="absolute inset-0"></div>
                             <Show when=move || !viewer_ready.get()>
                                 <div class="absolute inset-0 flex items-center justify-center text-xs text-gray-400">
@@ -800,13 +907,13 @@ pub fn StudioView(state: AppState) -> impl IntoView {
                         </Show>
                         <Show when=move || pane.get() == Pane::Versions>
                             <div class="flex-1 min-h-0 overflow-y-auto p-3 space-y-3">
-                                <RefStrip design=design on_remove=remove_reference/>
+                                <RefStrip state=state design=design on_remove=remove_reference/>
                                 <Show when=move || versions.with(Vec::is_empty)>
                                     <p class="p-3 text-xs text-gray-400">{move || t_string!(i18n, studio.versions_empty)}</p>
                                 </Show>
                                 <div class="space-y-1">
                                     <For each=move || versions.get() key=|v| v.id.clone() let:version>
-                                        <VersionRow version=version current=current on_select=select_version/>
+                                        <VersionRow state=state version=version current=current on_select=select_version/>
                                     </For>
                                 </div>
                             </div>
@@ -831,6 +938,7 @@ pub fn StudioView(state: AppState) -> impl IntoView {
 
             // ---- 删除设计 ----
             <Dialog open=delete_dialog title=move || t_string!(i18n, studio.delete_design)>
+                <p class="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{delete_name}</p>
                 <p class="text-sm leading-relaxed text-gray-600 dark:text-gray-300">{move || t_string!(i18n, studio.delete_confirm)}</p>
                 <DialogFooter>
                     <Button variant=ButtonVariant::Secondary on_click=move || delete_dialog.set(false)>{move || t_string!(i18n, common.cancel)}</Button>
@@ -842,8 +950,30 @@ pub fn StudioView(state: AppState) -> impl IntoView {
 }
 
 #[component]
-fn DesignRow(row: CadDesignSummary, design: RwSignal<Option<CadDesign>>, #[prop(into)] on_open: Callback<(String,)>) -> impl IntoView {
+fn DesignRow(
+    state: AppState,
+    row: CadDesignSummary,
+    design: RwSignal<Option<CadDesign>>,
+    #[prop(into)] on_open: Callback<(String,)>,
+    #[prop(into)] on_rename: Callback<(String,)>,
+    #[prop(into)] on_delete: Callback<(String,)>,
+) -> impl IntoView {
     let id = StoredValue::new(row.id.clone());
+    let name = StoredValue::new(row.name.clone());
+    let menu = move |ev: web_sys::MouseEvent| {
+        let l = current_locale();
+        let (open_id, rename_id, delete_id) = (id.get_value(), id.get_value(), id.get_value());
+        state.open_menu(
+            &ev,
+            vec![
+                item(td_string!(l, menu.open), IconKind::Box, move || on_open.run((open_id.clone(),))),
+                item(td_string!(l, menu.rename), IconKind::Pencil, move || on_rename.run((rename_id.clone(),))),
+                copy_entry(state, td_string!(l, menu.copy_name), name.get_value()),
+                separator(),
+                item(td_string!(l, menu.delete), IconKind::Trash, move || on_delete.run((delete_id.clone(),))).danger(),
+            ],
+        );
+    };
     let active = move || design.with(|d| d.as_ref().is_some_and(|d| id.with_value(|id| &d.id == id)));
     let size = row.size.map(|s| format!("{} × {} × {}", fmt_mm(s[0]), fmt_mm(s[1]), fmt_mm(s[2])));
     view! {
@@ -854,6 +984,7 @@ fn DesignRow(row: CadDesignSummary, design: RwSignal<Option<CadDesign>>, #[prop(
             class=("hover:bg-gray-100", move || !active())
             class=("dark:hover:bg-gray-700/60", move || !active())
             on:click=move |_| on_open.run((id.get_value(),))
+            on:contextmenu=menu
         >
             <div class="w-11 h-11 shrink-0 rounded-md overflow-hidden bg-gray-100 dark:bg-gray-900 flex items-center justify-center text-gray-300 dark:text-gray-600">
                 {match row.thumb.clone() {
@@ -874,7 +1005,7 @@ fn DesignRow(row: CadDesignSummary, design: RwSignal<Option<CadDesign>>, #[prop(
 
 /// 这个设计的参考图(看图出规格、看图复核都对照它们)。
 #[component]
-fn RefStrip(design: RwSignal<Option<CadDesign>>, #[prop(into)] on_remove: Callback<(String,)>) -> impl IntoView {
+fn RefStrip(state: AppState, design: RwSignal<Option<CadDesign>>, #[prop(into)] on_remove: Callback<(String,)>) -> impl IntoView {
     let i18n = use_i18n();
     let refs = move || design.with(|d| d.as_ref().map(|d| d.ref_asset_ids.clone()).unwrap_or_default());
     view! {
@@ -886,7 +1017,15 @@ fn RefStrip(design: RwSignal<Option<CadDesign>>, #[prop(into)] on_remove: Callba
                         {
                             let id = StoredValue::new(asset_id.clone());
                             view! {
-                                <div class="group relative w-14 h-14 rounded-lg overflow-hidden border border-gray-200 dark:border-gray-700">
+                                <div
+                                    class="group relative w-14 h-14 rounded-lg overflow-hidden border border-gray-200 dark:border-gray-700"
+                                    on:contextmenu=move |ev| {
+                                        let mut entries = image_entries(state, id.get_value());
+                                        entries.push(separator());
+                                        entries.push(item(td_string!(current_locale(), studio.menu_remove_ref), IconKind::Close, move || on_remove.run((id.get_value(),))).danger());
+                                        state.open_menu(&ev, entries);
+                                    }
+                                >
                                     <img src=ipc::asset_url(&asset_id) class="w-full h-full object-cover" draggable="false"/>
                                     <div class="absolute top-0 right-0 opacity-0 group-hover:opacity-100 transition-opacity rounded bg-white/90 dark:bg-gray-800/90">
                                         <IconButton icon=IconKind::Close label=move || t_string!(i18n, common.delete) on_click=move || on_remove.run((id.get_value(),))/>
@@ -902,9 +1041,22 @@ fn RefStrip(design: RwSignal<Option<CadDesign>>, #[prop(into)] on_remove: Callba
 }
 
 #[component]
-fn VersionRow(version: CadVersion, current: Memo<Option<CadVersion>>, #[prop(into)] on_select: Callback<(String,)>) -> impl IntoView {
+fn VersionRow(state: AppState, version: CadVersion, current: Memo<Option<CadVersion>>, #[prop(into)] on_select: Callback<(String,)>) -> impl IntoView {
     let i18n = use_i18n();
     let id = StoredValue::new(version.id.clone());
+    let script = StoredValue::new(version.code.clone());
+    let menu = move |ev: web_sys::MouseEvent| {
+        let l = current_locale();
+        let is_current = current.with_untracked(|c| c.as_ref().is_some_and(|c| id.with_value(|id| &c.id == id)));
+        state.open_menu(
+            &ev,
+            vec![
+                item(td_string!(l, studio.menu_use_version), IconKind::Check, move || on_select.run((id.get_value(),))).disabled_if(is_current),
+                separator(),
+                copy_entry(state, td_string!(l, menu.copy_code), script.get_value()),
+            ],
+        );
+    };
     let active = move || current.with(|c| c.as_ref().is_some_and(|c| id.with_value(|id| &c.id == id)));
     let source = version.source.clone();
     let tone = source_tone(&source);
@@ -920,6 +1072,7 @@ fn VersionRow(version: CadVersion, current: Memo<Option<CadVersion>>, #[prop(int
             class=("hover:bg-gray-100", move || !active())
             class=("dark:hover:bg-gray-700/60", move || !active())
             on:click=move |_| on_select.run((id.get_value(),))
+            on:contextmenu=menu
         >
             <div class="flex items-center gap-1.5">
                 <Badge tone=tone>{move || source_name(i18n.get_locale(), &source)}</Badge>

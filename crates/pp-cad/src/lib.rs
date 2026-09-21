@@ -3,6 +3,7 @@
 //! - `engine`:找到装好 build123d 的 Python 解释器(引擎包 / 开发用的虚拟环境);
 //! - `run`:在子进程里执行建模代码(冷启动,一次一个进程)——清空环境变量、超时即杀、只认执行器写的 result.json;
 //! - `worker`:同样的隔离,但进程常驻——省掉每次约 4 秒的「起解释器 + import build123d」,改参数才能做到即改即见;
+//! - `pool`:常驻进程的槽位——进程被杀 / 跑满任务数之后在后台换新,下一次建模不用等;
 //!   执行器本身(`py/runner.py`)做 AST 白名单并统一导出 STEP / STL / 3MF;
 //! - `params`:解析与改写 `# ---- PARAMS ----` 段——不经过模型的「局部修改」;
 //! - `contract`:代码契约的分段与检查。
@@ -10,12 +11,14 @@
 pub mod contract;
 pub mod engine;
 pub mod params;
+pub mod pool;
 pub mod run;
 pub mod worker;
 
 pub use engine::{engine_info, Engine};
 pub use params::{parse_params, set_param, ParamError};
 pub use run::{run, CadError, CancelFlag, RunOptions, RunOutput};
+pub use pool::{WorkerPool, WorkerStatus};
 pub use worker::Worker;
 
 #[cfg(test)]

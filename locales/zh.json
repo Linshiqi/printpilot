@@ -33,6 +33,23 @@
     "yes": "是",
     "no": "否"
   },
+  "menu": {
+    "cut": "剪切",
+    "copy": "复制",
+    "paste": "粘贴",
+    "select_all": "全选",
+    "copy_image": "复制图片",
+    "image_copied": "图片已复制,可以直接粘贴",
+    "open_external": "用默认程序打开",
+    "copied": "已复制",
+    "open": "打开",
+    "rename": "重命名",
+    "delete": "删除",
+    "copy_text": "复制这段话",
+    "copy_code": "复制代码",
+    "copy_name": "复制名称",
+    "copy_prompt": "复制提示词"
+  },
   "stage": {
     "idea": "灵感",
     "research": "调研",
@@ -50,6 +67,8 @@
     "done": "已完成"
   },
   "board": {
+    "menu_open": "打开项目",
+    "menu_last_stage": "已经是最后一个阶段",
     "title": "项目看板",
     "subtitle": "一张卡片 = 一个单品。拖动卡片推进阶段。",
     "new_project": "新建项目",
@@ -346,6 +365,11 @@
     "p_solids": "模型由 {{ count }} 个互不相连的实体组成",
     "p_no_volume": "模型没有体积",
     "p_invalid": "几何体无效(自交或退化面)",
+    "bed_contact": "贴床面积",
+    "note_no_flat_base": "没有平的底面:零件靠一条边、一个点或一个曲面着床,直接打不了——把底部削平,或者切片时加支撑",
+    "note_small_contact": "贴床面积只有 {{ area }} mm²(占地的 {{ percent }}%):首层容易粘不住,切片时建议加裙边(brim)",
+    "note_overhang": "有 {{ area }} cm² 朝下的悬空平面:跨度短的可以搭桥,长的要加支撑",
+    "p_no_flat_base": "没有平的底面(靠边 / 点 / 曲面着床),FDM 打不成",
     "p_off_plate": "底面不在打印床上(最低点 z = {{ z }})",
     "p_size": "尺寸与规格不符:实际 {{ got }},规格 {{ want }}",
     "p_too_big": "超出成型空间:{{ size }} mm",
@@ -354,6 +378,7 @@
     "p_unchanged": "模型交回了没有改动的代码"
   },
   "research": {
+    "menu_copy_topic": "复制调研主题",
     "title": "调研",
     "subtitle": "先搞清楚值不值得做:需求、竞品、价位、风险。看到好机会就「采用为项目」;也可以为已有的项目做。",
     "for_project": "为哪个项目调研",
@@ -361,6 +386,8 @@
     "history": "做过的调研"
   },
   "imagery": {
+    "menu_select": "设为当前这张",
+    "menu_export": "导出…",
     "title": "图片",
     "subtitle": "和 AI 一句一句地出图、改图。选中的那张就是「当前这张」,接下来说的话改的就是它。",
     "purpose": "用途",
@@ -405,6 +432,12 @@
     "compliance_note": "AI 生成的图只用于笔记配图和主图的非首图:小红书要求商品首图是实物正面图,发布时还要声明「AI 生成」。"
   },
   "studio": {
+    "menu_show_code": "显示代码",
+    "menu_open_slicer": "用切片软件打开",
+    "menu_reset_view": "复位视角",
+    "menu_export": "导出 {{ format }}…",
+    "menu_use_version": "切到这一版",
+    "menu_remove_ref": "移除这张参考图",
     "title": "建模",
     "subtitle": "看图或一句话 → 参数化的 3D 模型;然后和 AI 一句一句地改。",
     "new_design": "新建设计",
@@ -454,6 +487,9 @@
     "live_code": "正在写代码 · 已写 {{ n }} 行"
   },
   "pricing": {
+    "menu_open_model": "打开成本模型",
+    "menu_copy_note": "复制原因和备注",
+    "menu_delete_run": "删除这条打样记录",
     "title": "打样与定价",
     "subtitle": "上架之前就知道:卖多少钱、赚多少、一天最多接多少单。改任何一个数,右边立刻重算。",
     "autosaved": "已自动保存",

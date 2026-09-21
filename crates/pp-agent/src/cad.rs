@@ -16,7 +16,7 @@ use std::time::Instant;
 use async_trait::async_trait;
 use pp_cad::contract::{changed_sections, contract_issues, extract_code, sections};
 use pp_cad::{parse_params, CadError};
-use pp_common::cad::{CadBuildReport, CadMetrics, CadPick, CadProblem, CadReview, DesignSpec};
+use pp_common::cad::{CadBuildReport, CadMetrics, CadPick, CadProblem, CadReview, DesignSpec, PLATE_TOLERANCE_MM};
 use pp_providers::llm::{ChatMessage, ChatRequest, ChatResponse, LlmPricing, LlmProvider, StreamDelta, Usage};
 use pp_providers::ProviderError;
 
@@ -130,8 +130,15 @@ pub fn check_build(code: &str, metrics: &CadMetrics, spec: Option<&DesignSpec>, 
     if !metrics.is_valid {
         problems.push(CadProblem::Invalid);
     }
-    if metrics.bbox_min[2].abs() > 0.01 {
+    if metrics.bbox_min[2].abs() > PLATE_TOLERANCE_MM {
         problems.push(CadProblem::OffPlate { z: metrics.bbox_min[2] });
+    }
+    // 没有平的底面:只在按规格首次生成时算问题(规格本身就要求「底面要平、贴在 z = 0」)。
+    // 对话修改时不拦——用户说要一个球,就不该和他较劲;指标卡上照样会提醒(`CadMetrics::print_notes`)
+    if spec.is_some() && !metrics.rests_flat() {
+        problems.push(CadProblem::NoFlatBase {
+            contact_mm2: metrics.bed_contact_mm2.unwrap_or(0.0),
+        });
     }
     if let Some(spec) = spec {
         if spec.overall_mm.iter().all(|v| *v > 0.0) && !size_matches(metrics.size, spec.overall_mm) {
@@ -647,6 +654,8 @@ result = base - slot\n";
             faces: 10,
             edges: 24,
             is_valid: true,
+            bed_contact_mm2: Some(size[0] * size[1]),
+            overhang_mm2: Some(0.0),
         }
     }
 
@@ -748,6 +757,32 @@ result = base - slot\n";
         assert_eq!(kinds, ["solids", "invalid", "off_plate", "too_big"]);
         // 长条斜着放不进去,但转 90° 能放进去的不算超限
         assert!(check_build(GOOD, &metrics([100.0, 250.0, 6.0]), None, [256.0, 120.0, 256.0]).is_empty());
+    }
+
+    #[test]
+    fn a_curved_bottom_measured_from_the_mesh_is_not_mistaken_for_a_floating_part() {
+        // 底部是环面 / 自由曲面时最低点用三角网量,会偏高最多 0.02(弦差):这不是悬空
+        let mut m = metrics([60.0, 24.0, 12.0]);
+        m.bbox_min[2] = 0.019;
+        assert!(check_build(GOOD, &m, None, [256.0; 3]).is_empty());
+        m.bbox_min[2] = -0.2;
+        assert!(matches!(check_build(GOOD, &m, None, [256.0; 3]).as_slice(), [CadProblem::OffPlate { .. }]));
+    }
+
+    #[test]
+    fn no_flat_base_blocks_a_first_generation_but_not_a_conversation_edit() {
+        let mut ball = metrics([40.0, 40.0, 40.0]);
+        ball.bed_contact_mm2 = Some(0.0);
+        let mut ball_spec = spec();
+        ball_spec.overall_mm = [40.0, 40.0, 40.0];
+        // 按规格首次生成:规格本身就要求底面平、贴床
+        let problems = check_build(GOOD, &ball, Some(&ball_spec), [256.0; 3]);
+        assert_eq!(problems, vec![CadProblem::NoFlatBase { contact_mm2: 0.0 }]);
+        // 对话修改:用户要一个球就给他一个球(指标卡上另有提醒)
+        assert!(check_build(GOOD, &ball, None, [256.0; 3]).is_empty());
+        // 旧执行器没量这一项:不拿没有的数据判人家不合格
+        ball.bed_contact_mm2 = None;
+        assert!(check_build(GOOD, &ball, Some(&ball_spec), [256.0; 3]).is_empty());
     }
 
     #[test]

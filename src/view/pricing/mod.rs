@@ -19,12 +19,12 @@ use pp_common::cost::{
 use pp_common::{Project, ProjectStatus};
 
 use crate::i18n::{use_i18n, Locale};
-use crate::i18n_util::stage_name;
+use crate::i18n_util::{current_locale, stage_name};
 use crate::icon::{Icon, IconKind};
 use crate::ipc::{self, cmd};
 use crate::state::{AppState, Handoff};
 use crate::theme::{get_pref, set_pref};
-use crate::ui::{Badge, Button, ButtonVariant, Card, Dialog, EmptyState, IconButton, NumInput, SectionTitle, Segmented, TextInput, Tone};
+use crate::ui::{copy_entry, item, separator, Badge, Button, ButtonVariant, Card, Dialog, EmptyState, IconButton, NumInput, SectionTitle, Segmented, TextInput, Tone};
 use crate::utils::{format_ts, local_tz_offset_minutes};
 use profiles::ProfilesPanel;
 
@@ -722,6 +722,16 @@ fn ProjectRow(state: AppState, project: Project, current: RwSignal<Option<String
             class=("hover:bg-gray-100", move || !active())
             class=("dark:hover:bg-gray-700/60", move || !active())
             on:click=move |_| on_open.run((id.get_value(),))
+            on:contextmenu=move |ev| {
+                let l = current_locale();
+                state.open_menu(
+                    &ev,
+                    vec![
+                        item(td_string!(l, pricing.menu_open_model), IconKind::Ruler, move || on_open.run((id.get_value(),))),
+                        item(td_string!(l, board.menu_open), IconKind::Kanban, move || state.open_project.set(Some(id.get_value()))),
+                    ],
+                );
+            }
         >
             <div class="flex items-center justify-between gap-2">
                 <span class="text-[11px] font-mono text-gray-400">{project.code.clone()}</span>
@@ -859,7 +869,10 @@ fn PriceBand(band: RwSignal<Option<(u32, u32)>>, tiers: Memo<Vec<PriceCheck>>, p
 #[component]
 fn RunRow(run: PrintRun, tz: i32, #[prop(into)] on_delete: Callback<(String,)>) -> impl IntoView {
     let i18n = use_i18n();
+    let state = expect_context::<AppState>();
     let id = StoredValue::new(run.id.clone());
+    // 失败原因 / 备注:改设计时要抄走的就是这两句
+    let words = StoredValue::new([run.fail_reason.trim(), run.note.trim()].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n"));
     // 组件体里不是响应式上下文:文案按当前语言取一次就够了(这一行不会跟着切语言变,列表重建时会)
     let est = td_string!(crate::i18n_util::current_locale(), pricing.est);
     let pair = |actual: Option<f64>, est_value: Option<f64>, unit: &str, decimals: usize| match (actual, est_value) {
@@ -874,7 +887,19 @@ fn RunRow(run: PrintRun, tz: i32, #[prop(into)] on_delete: Callback<(String,)>) 
         .join(" · ");
     let success = run.success;
     view! {
-        <div class="group flex items-start gap-2 px-2.5 py-2 rounded-lg border border-gray-200 dark:border-gray-700">
+        <div
+            class="group flex items-start gap-2 px-2.5 py-2 rounded-lg border border-gray-200 dark:border-gray-700"
+            on:contextmenu=move |ev| {
+                let l = crate::i18n_util::current_locale();
+                let mut entries = crate::ui::basics(state, &ev);
+                if !words.with_value(String::is_empty) {
+                    entries.push(copy_entry(state, td_string!(l, pricing.menu_copy_note), words.get_value()));
+                    entries.push(separator());
+                }
+                entries.push(item(td_string!(l, pricing.menu_delete_run), IconKind::Trash, move || on_delete.run((id.get_value(),))).danger());
+                state.open_menu(&ev, entries);
+            }
+        >
             <div class="pt-0.5">
                 {if success {
                     view! { <Badge tone=Tone::Green>{move || t_string!(i18n, pricing.run_success)}</Badge> }.into_any()

@@ -1,6 +1,6 @@
 [package]
 name = "printpilot-ui"
-version = "0.9.4"
+version = "0.9.5"
 edition = "2021"
 
 # 根包 = 前端(Leptos CSR,编译到 wasm);后端在 src-tauri,共享与领域代码在 crates/。
@@ -43,6 +43,11 @@ web-sys = { version = "0.3", features = [
     "EventTarget",
     "KeyboardEvent",
     "MouseEvent",
+    # 右键菜单(ui/context_menu.rs):编辑命令、选区、图片的 src、把右键转交给底下的元素
+    "MouseEventInit",
+    "HtmlDocument",
+    "HtmlImageElement",
+    "Selection",
     # 看板拖拽走指针事件而不是 HTML5 DnD(pointer_drag.rs,照搬 velo)
     "PointerEvent",
     "DomRect",

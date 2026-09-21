@@ -15,8 +15,8 @@ pub struct AppCtx {
     pub data_root: PathBuf,
     /// 接口密钥(系统凭据管理器)。走 trait 是为了测试时能换成内存实现
     pub credentials: Arc<dyn CredentialStore>,
-    /// 常驻的建模引擎进程(省掉每次约 4 秒的冷启动)。用到时才起;超时 / 出协议错误就丢掉,下次再起一个
-    pub cad_worker: Mutex<Option<pp_cad::Worker>>,
+    /// 常驻的建模引擎进程(省掉每次约 4 秒的冷启动)。用到时才起;被杀 / 跑满任务数之后在后台换新
+    pub cad_pool: pp_cad::WorkerPool,
     /// 同一时间只许一个「解引擎包」在跑:界面重新挂载会让第二个安装请求紧跟着到,
     /// 两个并发的安装会互相清掉对方解到一半的目录
     pub engine_install: Mutex<()>,
@@ -41,7 +41,11 @@ impl AppCtx {
             library_dir,
             data_root,
             credentials: Arc::new(KeyringStore),
-            cad_worker: Mutex::new(None),
+            cad_pool: pp_cad::WorkerPool::new(
+                crate::command::cad::scratch_root(),
+                crate::command::cad::WORKER_MAX_JOBS,
+                crate::command::cad::WORKER_READY_TIMEOUT,
+            ),
             engine_install: Mutex::new(()),
             turns: Arc::new(crate::turns::Turns::default()),
             config_dir,
