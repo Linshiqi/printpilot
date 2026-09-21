@@ -22,7 +22,7 @@ use crate::i18n::{use_i18n, Locale};
 use crate::i18n_util::current_locale;
 use crate::icon::{Icon, IconKind};
 use crate::ipc::{self, cmd};
-use crate::state::AppState;
+use crate::state::{AppState, Handoff};
 use crate::theme::{get_pref, set_pref, Theme};
 use crate::ui::{Badge, Button, ButtonVariant, Card, Dialog, DialogFooter, EmptyState, IconButton, Segmented, Toggle, Tone};
 use crate::utils::fmt_mm;
@@ -149,8 +149,18 @@ pub fn StudioView(state: AppState) -> impl IntoView {
             }
         });
     };
+    // 从项目里过来的:打开指定的设计,输入框里先放一句草稿;否则回到上次打开的那个
+    let (wanted, draft) = match state.handoff.get_untracked() {
+        Some(Handoff::Design { design_id, draft }) => {
+            state.handoff.set(None);
+            (Some(design_id), draft)
+        }
+        _ => (get_pref("studio_design"), String::new()),
+    };
+    let draft_for = StoredValue::new(wanted.clone().filter(|_| !draft.is_empty()).map(|id| (id, draft)));
     let show_detail = move |d: CadDesignDetail| {
         set_pref("studio_design", &d.design.id);
+        let d_id = d.design.id.clone();
         let current_code = d
             .design
             .current_version_id
@@ -159,7 +169,9 @@ pub fn StudioView(state: AppState) -> impl IntoView {
             .map(|v| v.code.clone())
             .unwrap_or_default();
         code.set(current_code);
-        text.set(String::new());
+        // 从项目里过来时带的那句草稿(只用一次)
+        text.set(draft_for.with_value(|d| d.as_ref().filter(|(id, _)| id == &d_id).map(|(_, t)| t.clone())).unwrap_or_default());
+        draft_for.set_value(None);
         pending_images.set(Vec::new());
         pick_mode.set(false);
         loaded_id.set_value(None);
@@ -191,8 +203,7 @@ pub fn StudioView(state: AppState) -> impl IntoView {
     spawn_local(async move {
         match ipc::call_no_args::<Vec<CadDesignSummary>>(cmd::DESIGN_LIST).await {
             Ok(list) => {
-                let last = get_pref("studio_design");
-                let pick = list.iter().find(|d| Some(&d.id) == last.as_ref()).or(list.first()).map(|d| d.id.clone());
+                let pick = list.iter().find(|d| Some(&d.id) == wanted.as_ref()).or(list.first()).map(|d| d.id.clone());
                 designs.set(list);
                 if let Some(id) = pick {
                     open(id);
@@ -212,6 +223,8 @@ pub fn StudioView(state: AppState) -> impl IntoView {
         messages.update(|list| list.extend(res.messages));
         design.set(Some(res.design));
         reload_list();
+        // 「建出了一个模型」是项目「建模」阶段的清单项
+        state.reload_project_facts();
     };
 
     // 所有「调后端、可能要等很久」的操作走同一条路:上锁 → 清进度 → 调用 → 解锁
@@ -221,12 +234,14 @@ pub fn StudioView(state: AppState) -> impl IntoView {
         }
         busy.set(true);
         state.cad_progress.set(None);
+        state.cad_stream.set(Default::default());
         spawn_local(async move {
             if let Err(e) = job.await {
                 state.notify_error(e);
             }
             busy.set(false);
             state.cad_progress.set(None);
+            state.cad_stream.set(Default::default());
         });
     };
 
@@ -337,6 +352,12 @@ pub fn StudioView(state: AppState) -> impl IntoView {
         select_version: Callback::new(move |(v,)| select_version(v)),
         say: Callback::new(move |(said,)| say(said)),
         load_code: Callback::new(move |(c,)| load_code(c)),
+        // 停止这一轮:后端丢掉等模型的那个请求、杀掉正在跑的脚本;这一轮什么都不入库,输入框里的话还在
+        stop: Callback::new(move |()| {
+            if let Some(id) = design.with_untracked(|d| d.as_ref().map(|d| d.id.clone())) {
+                state.cancel_turn(format!("design:{id}"));
+            }
+        }),
     };
 
     // ---- 不经过模型的修改 ----
@@ -391,7 +412,10 @@ pub fn StudioView(state: AppState) -> impl IntoView {
         let Some(id) = design_id() else { return };
         spawn_local(async move {
             match ipc::call::<_, CadDesign>(cmd::DESIGN_LINK_PROJECT, &serde_json::json!({ "id": id, "project_id": project_id })).await {
-                Ok(d) => design.set(Some(d)),
+                Ok(d) => {
+                    design.set(Some(d));
+                    state.reload_project_facts();
+                }
                 Err(e) => state.notify_error(e),
             }
         });
@@ -647,6 +671,14 @@ pub fn StudioView(state: AppState) -> impl IntoView {
                                     }
                                 }).collect_view()}
                             </select>
+                            // 已经挂在项目上:一键打开项目中枢(抽屉盖在当前页面上,不用离开工作台)
+                            <Show when=move || design.with(|x| x.as_ref().is_some_and(|x| x.project_id.is_some()))>
+                                <IconButton
+                                    icon=IconKind::Kanban
+                                    label=move || t_string!(i18n, project.open_hub)
+                                    on_click=move || state.open_project.set(design.with_untracked(|x| x.as_ref().and_then(|x| x.project_id.clone())))
+                                />
+                            </Show>
                             <div class="flex-1"></div>
                             <label class="shrink-0 flex items-center gap-1.5">
                                 <Toggle checked=edges on_change=move |v: bool| edges.set(v)/>
@@ -737,6 +769,7 @@ pub fn StudioView(state: AppState) -> impl IntoView {
                                 messages=messages
                                 design=design
                                 busy=busy
+                                live=state.cad_stream
                                 progress_text=progress_text
                                 can_send=can_send
                                 text=text

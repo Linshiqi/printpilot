@@ -31,6 +31,8 @@ pub enum CadError {
     /// 执行器没按约定写结果(崩溃、被杀、磁盘满…)
     Protocol(String),
     Io(String),
+    /// 用户取消了这一轮:正在跑的脚本进程已经被杀掉
+    Cancelled,
 }
 
 impl std::fmt::Display for CadError {
@@ -42,6 +44,7 @@ impl std::fmt::Display for CadError {
             CadError::Script(e) => write!(f, "{}", e.for_model()),
             CadError::Protocol(e) => write!(f, "CAD engine returned no result: {e}"),
             CadError::Io(e) => write!(f, "{e}"),
+            CadError::Cancelled => write!(f, "cancelled by user"),
         }
     }
 }
@@ -57,7 +60,29 @@ impl CadError {
             CadError::Script(_) => "cad_script_error",
             CadError::Protocol(_) => "cad_engine_failed",
             CadError::Io(_) => "io_failed",
+            CadError::Cancelled => "cancelled",
         }
+    }
+}
+
+/// 「取消」开关:调用方置为 true,正在执行的脚本进程会在约 0.1 秒内被杀掉,`run` 返回 `CadError::Cancelled`。
+#[derive(Debug, Clone, Default)]
+pub struct CancelFlag(pub std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl CancelFlag {
+    pub fn cancel(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+/// 两个开关是不是同一个(`RunOptions` 要能比较;开关的「值」没有比较的意义)。
+impl PartialEq for CancelFlag {
+    fn eq(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.0, &other.0)
     }
 }
 
@@ -69,6 +94,8 @@ pub struct RunOptions {
     pub stl_tolerance: f64,
     pub stl_angular_tolerance: f64,
     pub timeout: Duration,
+    /// 用户点了「停止」时由调用方置位
+    pub cancel: CancelFlag,
 }
 
 impl Default for RunOptions {
@@ -78,6 +105,7 @@ impl Default for RunOptions {
             stl_tolerance: 0.01,
             stl_angular_tolerance: 0.1,
             timeout: Duration::from_secs(90),
+            cancel: CancelFlag::default(),
         }
     }
 }
@@ -244,6 +272,11 @@ pub fn run(engine: &Engine, code: &str, work_dir: &Path, opts: &RunOptions) -> R
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(CadError::Timeout(opts.timeout));
+            }
+            None if opts.cancel.is_cancelled() => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(CadError::Cancelled);
             }
             None => std::thread::sleep(Duration::from_millis(40)),
         }

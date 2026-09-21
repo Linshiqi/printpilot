@@ -58,8 +58,15 @@ pub(crate) fn invalid(detail: impl std::fmt::Display) -> String {
     errcode::err(errcode::INVALID_INPUT, detail)
 }
 
+/// 流式片段的事件名。载荷:`{ kind: reasoning|content|reset, text }`
+const STREAM_EVENT: &str = "cad-stream";
+/// 片段攒这么久发一次:模型一秒能吐几十个 token,逐个发事件只会让界面忙着重排
+const STREAM_FLUSH_EVERY: std::time::Duration = std::time::Duration::from_millis(50);
+
 fn progress_payload(p: &CadProgress) -> serde_json::Value {
     match p {
+        // 流式片段走另一个事件(见 emitter),不会到这里
+        CadProgress::Delta(_) | CadProgress::StreamReset => json!({ "step": "streaming" }),
         CadProgress::ReadingImage => json!({ "step": "reading_image" }),
         CadProgress::WritingCode { attempt } => json!({ "step": "writing_code", "attempt": attempt }),
         CadProgress::Running { attempt } => json!({ "step": "running", "attempt": attempt }),
@@ -69,10 +76,65 @@ fn progress_payload(p: &CadProgress) -> serde_json::Value {
     }
 }
 
+/// 攒着还没发出去的流式片段。
+#[derive(Default)]
+struct StreamBuf {
+    reasoning: String,
+    content: String,
+    last_flush: Option<std::time::Instant>,
+}
+
+impl StreamBuf {
+    /// 把攒着的取走(思维链在前、正文在后,和它们到达的先后一致)。
+    fn take(&mut self, now: std::time::Instant) -> Vec<(&'static str, String)> {
+        self.last_flush = Some(now);
+        let mut out = Vec::new();
+        if !self.reasoning.is_empty() {
+            out.push(("reasoning", std::mem::take(&mut self.reasoning)));
+        }
+        if !self.content.is_empty() {
+            out.push(("content", std::mem::take(&mut self.content)));
+        }
+        out
+    }
+
+    fn push(&mut self, delta: pp_providers::llm::StreamDelta, now: std::time::Instant) -> Vec<(&'static str, String)> {
+        match delta {
+            pp_providers::llm::StreamDelta::Reasoning(t) => self.reasoning.push_str(&t),
+            pp_providers::llm::StreamDelta::Content(t) => self.content.push_str(&t),
+        }
+        let due = self.last_flush.is_none_or(|at| now.duration_since(at) >= STREAM_FLUSH_EVERY);
+        if due {
+            self.take(now)
+        } else {
+            Vec::new()
+        }
+    }
+}
+
+/// 进度 → 前端事件。步骤走 `cad-progress`;模型正在说的话走 `cad-stream`(节流:攒 50 毫秒发一次)。
+/// 任何一个「步骤」事件到来之前,先把攒着的片段发完——步骤总是跟在一次回答之后。
 pub(crate) fn emitter(app: &AppHandle) -> impl Fn(CadProgress) + Send + Sync {
     let app = app.clone();
+    let buf = Mutex::new(StreamBuf::default());
     move |p: CadProgress| {
-        let _ = app.emit(PROGRESS_EVENT, progress_payload(&p));
+        let send = |chunks: Vec<(&'static str, String)>| {
+            for (kind, text) in chunks {
+                let _ = app.emit(STREAM_EVENT, json!({ "kind": kind, "text": text }));
+            }
+        };
+        let mut buf = buf.lock().unwrap_or_else(|e| e.into_inner());
+        match p {
+            CadProgress::Delta(delta) => send(buf.push(delta, std::time::Instant::now())),
+            CadProgress::StreamReset => {
+                *buf = StreamBuf::default();
+                let _ = app.emit(STREAM_EVENT, json!({ "kind": "reset", "text": "" }));
+            }
+            step => {
+                send(buf.take(std::time::Instant::now()));
+                let _ = app.emit(PROGRESS_EVENT, progress_payload(&step));
+            }
+        }
     }
 }
 
@@ -163,13 +225,17 @@ pub(crate) struct EngineExecutor {
 }
 
 impl EngineExecutor {
-    pub(crate) fn new(ctx: &Arc<AppCtx>) -> Result<Self, String> {
+    /// `cancel`:这一轮的取消开关(`TurnGuard::flag`)。置位后正在跑的脚本会被杀掉。
+    pub(crate) fn new(ctx: &Arc<AppCtx>, cancel: pp_cad::CancelFlag) -> Result<Self, String> {
         let engine = Engine::locate(&ctx.data_root).ok_or_else(|| cad_err(CadError::EngineMissing))?;
         Ok(Self {
             ctx: ctx.clone(),
             engine,
             session: Session::new()?,
-            opts: RunOptions::default(),
+            opts: RunOptions {
+                cancel,
+                ..Default::default()
+            },
             counter: AtomicU32::new(0),
             outputs: Mutex::new(HashMap::new()),
         })
@@ -455,7 +521,8 @@ pub(crate) fn cad_config(demo: bool) -> CadConfig {
 
 pub(crate) fn llm_or_demo(ctx: &AppCtx, demo_answers: Vec<String>) -> Result<Box<dyn LlmProvider>, String> {
     if ctx.config().demo_mode {
-        Ok(Box::new(MockLlm::new(demo_answers)))
+        // 演示模式也「一个字一个字地出来」:看得见正在写,也来得及点「停止」
+        Ok(Box::new(MockLlm::new(demo_answers).with_stream_delay(std::time::Duration::from_millis(35))))
     } else {
         Ok(Box::new(llm_for(ctx)?))
     }
@@ -600,6 +667,25 @@ pub async fn cad_export(ctx: State<'_, Arc<AppCtx>>, version_id: String, format:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stream_pieces_are_batched_and_nothing_is_lost_at_the_end() {
+        use pp_providers::llm::StreamDelta::{Content, Reasoning};
+        let t0 = std::time::Instant::now();
+        let ms = |n: u64| t0 + std::time::Duration::from_millis(n);
+        let mut buf = StreamBuf::default();
+
+        // 第一段立刻发(界面马上有反应);之后 50 毫秒内到的攒着
+        assert_eq!(buf.push(Reasoning("先想".into()), ms(0)), [("reasoning", "先想".to_string())]);
+        assert!(buf.push(Content("线槽".into()), ms(10)).is_empty());
+        assert!(buf.push(Content("加宽".into()), ms(30)).is_empty());
+        // 过了 50 毫秒:攒着的一次发出去
+        assert_eq!(buf.push(Content("到 8 mm".into()), ms(70)), [("content", "线槽加宽到 8 mm".to_string())]);
+        // 回答结束时还攒着的(不满 50 毫秒的尾巴)由下一个「步骤」事件带走,不能丢
+        assert!(buf.push(Content("。".into()), ms(80)).is_empty());
+        assert_eq!(buf.take(ms(81)), [("content", "。".to_string())]);
+        assert!(buf.take(ms(82)).is_empty());
+    }
     use pp_agent::{edit_model, generate_model};
     use pp_cad::contract::changed_sections;
 

@@ -6,7 +6,7 @@
   "nav": {
     "dashboard": "Dashboard",
     "projects": "Projects",
-    "ideas": "Idea pool",
+    "ideas": "Research",
     "calendar": "Content calendar",
     "orders": "Orders & printing",
     "analytics": "Analytics",
@@ -84,11 +84,38 @@
     "killed_because": "Killed because",
     "delete_title": "Delete project",
     "delete_confirm": "Delete {{ code }}? Its history and files stay in the library.",
-    "forced_title": "Stages were skipped",
-    "forced_hint": "Straight from \"{{ from }}\" to \"{{ to }}\". Leave a reason for the review.",
+    "forced_title": "Not enough evidence for this move",
+    "forced_hint": "From \"{{ from }}\" to \"{{ to }}\". Leave a reason for the review.",
     "forced_reason_label": "Reason",
     "forced_reason_placeholder": "e.g. Already have a model, no research or modeling needed",
-    "details": "Details"
+    "details": "Details",
+    "forced_skipped": "The skipped stage cannot be checked automatically (its tools are not built yet).",
+    "gate_title": "Before leaving \"{{ stage }}\"",
+    "gate_ready": "Checklist done, ready to move on",
+    "gate_manual": "The tools for this stage (prototype cost, listing, orders, analytics) are not built yet; use your own judgment for now.",
+    "gate_hypothesis": "Write down the hypothesis to test",
+    "gate_research": "Have a research report",
+    "gate_adopted_image": "Adopt a preview image",
+    "gate_model": "Build a model",
+    "hint_hypothesis": "In \"Details\" below, write one line: who buys it, why, and what they would pay.",
+    "advance": "Move to \"{{ stage }}\"",
+    "advance_anyway": "Skip for now, move to \"{{ stage }}\"…",
+    "ready_badge": "Ready",
+    "open_hub": "Open the project (checklist and its research / images / models)",
+    "work_research": "Research",
+    "work_images": "Images",
+    "work_models": "Models",
+    "do_research": "Run research",
+    "do_images": "Make preview images",
+    "do_model": "Start modeling",
+    "do_model_from_image": "Model from the adopted image",
+    "none_research": "No research yet.",
+    "none_images": "No images yet.",
+    "none_models": "No models yet.",
+    "cost_so_far": "AI spend ¥{{ yuan }}",
+    "opportunities": "{{ n }} opportunities",
+    "images_count": "{{ n }} images",
+    "versions_count": "{{ n }} versions"
   },
   "settings": {
     "title": "Settings",
@@ -137,7 +164,7 @@
   },
   "lab": {
     "title": "Tech spikes",
-    "subtitle": "W0 proving ground: the 3D view bridge, the geometry kernel and the research pipeline.",
+    "subtitle": "W0 proving ground: the 3D view bridge and the geometry kernel. (Code CAD and market research now have their own entries.)",
     "generate": "Generate sample",
     "shape_sphere": "Sphere",
     "shape_torus": "Torus",
@@ -179,8 +206,6 @@
     "show_bed": "Build volume",
     "cut_preview": "Preview cut",
     "pick_model": "Pick a model to view",
-    "tab_model": "3D models",
-    "tab_research": "Market research",
     "r_topic": "Topic",
     "r_topic_placeholder": "e.g. desk organizers, cat accessories",
     "r_price": "Target price (¥, optional)",
@@ -321,6 +346,13 @@
     "p_param_range": "Parameter {{ name }} = {{ value }} is outside its declared range",
     "p_unchanged": "The model returned the script unchanged"
   },
+  "research": {
+    "title": "Research",
+    "subtitle": "Find out whether it is worth making: demand, competitors, price band, risks. Adopt a good opportunity as a project, or research for an existing one.",
+    "for_project": "Research for which project",
+    "no_project": "No project (looking for opportunities)",
+    "history": "Past research"
+  },
   "imagery": {
     "title": "Images",
     "subtitle": "Generate and refine images with AI, one message at a time. The selected image is the current one: what you say next edits it.",
@@ -410,7 +442,9 @@
     "undo": "Undo this change",
     "load_failed_code": "Put the last draft into the editor",
     "event_manual": "Code edited by hand and run",
-    "msg_usage": "¥{{ yuan }} · {{ secs }} s"
+    "msg_usage": "¥{{ yuan }} · {{ secs }} s",
+    "stop": "Stop",
+    "live_code": "Writing code · {{ n }} lines so far"
   },
   "backend": {
     "not_found": "Record not found",
@@ -434,6 +468,7 @@
     "cad_timeout": "The model script timed out",
     "cad_script_error": "The model script failed",
     "image_unreadable": "This image could not be read",
+    "cancelled": "Stopped. Nothing from this turn was saved; your message is still in the box.",
     "unknown": "Something went wrong"
   }
 }

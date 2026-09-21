@@ -78,7 +78,14 @@ pub fn DialogFooter(children: Children) -> impl IntoView {
 
 /// 右侧滑出的抽屉:看详情、不打断当前页面。
 #[component]
-pub fn Drawer(open: RwSignal<bool>, #[prop(into)] title: TextProp, children: ChildrenFn) -> impl IntoView {
+pub fn Drawer(
+    open: RwSignal<bool>,
+    #[prop(into)] title: TextProp,
+    /// 宽一档(项目中枢要摆清单和缩略图)
+    #[prop(optional)]
+    wide: bool,
+    children: ChildrenFn,
+) -> impl IntoView {
     let i18n = use_i18n();
     close_on_escape(open);
     let title = StoredValue::new(title);
@@ -96,8 +103,10 @@ pub fn Drawer(open: RwSignal<bool>, #[prop(into)] title: TextProp, children: Chi
                 <aside
                     role="dialog"
                     aria-modal="true"
-                    class="w-[440px] max-w-full h-full flex flex-col bg-white dark:bg-gray-800 shadow-2xl \
+                    class="max-w-full h-full flex flex-col bg-white dark:bg-gray-800 shadow-2xl \
                            border-l border-gray-200 dark:border-gray-700 animate-drawer-in"
+                    class=("w-[440px]", !wide)
+                    class=("w-[600px]", wide)
                 >
                     <header class="flex items-center justify-between gap-3 px-5 py-3 border-b border-gray-200 dark:border-gray-700">
                         <h2 class="text-base font-semibold text-gray-900 dark:text-gray-50 truncate">

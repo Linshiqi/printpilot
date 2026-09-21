@@ -3,7 +3,9 @@ use std::sync::Mutex;
 
 use async_trait::async_trait;
 
-use super::{ChatRequest, ChatResponse, LlmProvider, Usage};
+use std::time::Duration;
+
+use super::{ChatRequest, ChatResponse, DeltaSink, LlmProvider, StreamDelta, Usage};
 use crate::error::ProviderError;
 
 /// 按脚本回答的假模型:上层流水线的单测与演示模式都用它。
@@ -12,7 +14,12 @@ pub struct MockLlm {
     script: Mutex<VecDeque<Result<String, ProviderError>>>,
     seen: Mutex<Vec<ChatRequest>>,
     usage_per_call: Usage,
+    /// 流式时每个片段之间停多久。单测里是 0;演示模式给一点,让界面上看得见「正在写」、也来得及点「停止」
+    stream_delay: Duration,
 }
+
+/// 流式时一个片段多少个字符
+const STREAM_CHUNK_CHARS: usize = 24;
 
 impl MockLlm {
     pub fn new<I, S>(answers: I) -> Self
@@ -28,7 +35,13 @@ impl MockLlm {
                 completion_tokens: 200,
                 cache_hit_tokens: 0,
             },
+            stream_delay: Duration::ZERO,
         }
+    }
+
+    pub fn with_stream_delay(mut self, delay: Duration) -> Self {
+        self.stream_delay = delay;
+        self
     }
 
     /// 在脚本末尾追加一次失败(测重试与错误传播)。
@@ -68,6 +81,18 @@ impl LlmProvider for MockLlm {
             usage: self.usage_per_call,
         })
     }
+
+    async fn chat_stream(&self, req: ChatRequest, sink: DeltaSink<'_>) -> Result<ChatResponse, ProviderError> {
+        let resp = self.chat(req).await?;
+        let chars: Vec<char> = resp.content.chars().collect();
+        for piece in chars.chunks(STREAM_CHUNK_CHARS) {
+            if !self.stream_delay.is_zero() {
+                tokio::time::sleep(self.stream_delay).await;
+            }
+            sink(StreamDelta::Content(piece.iter().collect()));
+        }
+        Ok(resp)
+    }
 }
 
 #[cfg(test)]
@@ -85,5 +110,25 @@ mod tests {
         assert!(llm.chat(req()).await.is_err(), "脚本用完要报错,不能悄悄给空回答");
         assert_eq!(llm.calls(), 4);
         assert_eq!(llm.requests()[0].messages[0].content, "hi");
+    }
+
+    #[tokio::test]
+    async fn streaming_delivers_the_same_answer_in_pieces() {
+        let answer = "线槽加宽到 8 mm,其余不变。".repeat(6);
+        let llm = MockLlm::new([answer.clone()]);
+        let pieces = Mutex::new(Vec::new());
+        let sink = |d: StreamDelta| pieces.lock().unwrap().push(d);
+        let resp = llm.chat_stream(ChatRequest::new("m", vec![ChatMessage::user("hi")]), &sink).await.unwrap();
+        let pieces = pieces.into_inner().unwrap();
+        assert!(pieces.len() > 2, "长回答要分成好几段");
+        let joined: String = pieces
+            .iter()
+            .map(|d| match d {
+                StreamDelta::Content(t) => t.as_str(),
+                StreamDelta::Reasoning(_) => "",
+            })
+            .collect();
+        assert_eq!(joined, answer);
+        assert_eq!(resp.content, answer, "最后交回的完整回答和片段拼起来的一样");
     }
 }

@@ -29,6 +29,8 @@ pub struct ChatActions {
     pub say: Callback<(String,)>,
     /// 没改成的那一版代码 → 放进代码编辑器
     pub load_code: Callback<(String,)>,
+    /// 停止正在跑的这一轮
+    pub stop: Callback<()>,
 }
 
 fn size_text(v: [f64; 3]) -> String {
@@ -40,6 +42,8 @@ pub fn ChatPane(
     messages: RwSignal<Vec<CadMessage>>,
     design: RwSignal<Option<CadDesign>>,
     busy: RwSignal<bool>,
+    /// 模型正在说的话(流式)
+    live: RwSignal<crate::state::LiveAnswer>,
     #[prop(into)] progress_text: Signal<String>,
     #[prop(into)] can_send: Signal<bool>,
     text: RwSignal<String>,
@@ -57,10 +61,10 @@ pub fn ChatPane(
     });
     let current_version = Memo::new(move |_| design.with(|d| d.as_ref().and_then(|d| d.current_version_id.clone())));
 
-    // 有新消息 / 开始干活时滚到底
+    // 有新消息 / 开始干活 / 正在说的话变长时滚到底
     let scroller = NodeRef::<leptos::html::Div>::new();
     Effect::new(move |_| {
-        let _ = (messages.with(Vec::len), busy.get());
+        let _ = (messages.with(Vec::len), busy.get(), live.with(|l| l.content.len() + l.reasoning.len()));
         request_animation_frame(move || {
             if let Some(el) = scroller.get_untracked() {
                 el.set_scroll_top(el.scroll_height());
@@ -112,13 +116,39 @@ pub fn ChatPane(
                     <MessageView msg=m last_spec_id=last_spec_id current_version=current_version busy=busy has_model=Signal::derive(has_model) actions=actions/>
                 </For>
                 <Show when=move || busy.get()>
+                    // ---- 模型正在说的话(流式):先是思考的尾巴,然后是那句话,写到代码时只报行数 ----
+                    {move || {
+                        let (words, code_lines) = live.with(|l| l.split());
+                        let thinking = live.with(|l| if l.content.is_empty() { l.reasoning_tail(160) } else { String::new() });
+                        view! {
+                            {(!thinking.is_empty()).then(|| view! {
+                                <p class="max-w-[95%] px-3 text-[11px] leading-relaxed italic text-gray-400 whitespace-pre-wrap break-words">{thinking}</p>
+                            })}
+                            {(!words.is_empty()).then(|| view! {
+                                <div class="max-w-[95%] px-3 py-2 rounded-2xl rounded-bl-md bg-gray-100 dark:bg-gray-700/70 text-sm leading-relaxed whitespace-pre-wrap \
+                                            text-gray-900 dark:text-gray-100">
+                                    {words}
+                                </div>
+                            })}
+                            {code_lines.map(|n| view! {
+                                <div class="pl-1 flex items-center gap-1.5 text-[11px] tabular-nums text-gray-500 dark:text-gray-400">
+                                    <Icon kind=IconKind::Code class="w-3 h-3"/>
+                                    {move || t_string!(i18n, studio.live_code, n = n).to_string()}
+                                </div>
+                            })}
+                        }
+                    }}
                     <div class="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
                         <span class="inline-flex gap-1">
                             <span class="w-1.5 h-1.5 rounded-full bg-brand animate-bounce"></span>
                             <span class="w-1.5 h-1.5 rounded-full bg-brand animate-bounce [animation-delay:120ms]"></span>
                             <span class="w-1.5 h-1.5 rounded-full bg-brand animate-bounce [animation-delay:240ms]"></span>
                         </span>
-                        {move || progress_text.get()}
+                        <span class="min-w-0 truncate">{move || progress_text.get()}</span>
+                        <div class="flex-1"></div>
+                        <Button small=true variant=ButtonVariant::Secondary icon=IconKind::Ban on_click=move || actions.stop.run(())>
+                            {move || t_string!(i18n, studio.stop)}
+                        </Button>
                     </div>
                 </Show>
             </div>

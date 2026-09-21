@@ -17,7 +17,7 @@ use async_trait::async_trait;
 use pp_cad::contract::{changed_sections, contract_issues, extract_code, sections};
 use pp_cad::{parse_params, CadError};
 use pp_common::cad::{CadBuildReport, CadMetrics, CadPick, CadProblem, CadReview, DesignSpec};
-use pp_providers::llm::{ChatMessage, ChatRequest, ChatResponse, LlmPricing, LlmProvider, Usage};
+use pp_providers::llm::{ChatMessage, ChatRequest, ChatResponse, LlmPricing, LlmProvider, StreamDelta, Usage};
 use pp_providers::ProviderError;
 
 use crate::json::ask_json;
@@ -74,6 +74,17 @@ pub enum CadProgress {
     Repairing { attempt: u32, problems: u32 },
     Reviewing,
     Done,
+    /// 模型正在说的话的一小段(流式)。界面把它们接起来,就是「一个字一个字地出来」
+    Delta(StreamDelta),
+    /// 刚才那次回答作废了(坏响应,要重问):界面清掉已经显示的片段
+    StreamReset,
+}
+
+impl CadProgress {
+    /// 是不是流式片段这类「高频、不算一步」的事件(写测试、记日志时通常要滤掉)。
+    pub fn is_stream(&self) -> bool {
+        matches!(self, CadProgress::Delta(_) | CadProgress::StreamReset)
+    }
 }
 
 /// 「执行一段建模代码」的能力。真实实现起 Python 子进程(src-tauri),测试里用假的。
@@ -248,18 +259,28 @@ async fn evaluate(
     })
 }
 
-/// 问一次;空内容之类的坏响应再问一次(DeepSeek 文档明说偶尔会这样)。
-pub(crate) async fn chat_once(llm: &dyn LlmProvider, req: &ChatRequest, calls: &mut u32) -> Result<ChatResponse, ProviderError> {
+/// 问一次(流式:片段经 `on_progress` 交出去);空内容之类的坏响应再问一次(DeepSeek 文档明说偶尔会这样)。
+pub(crate) async fn chat_once(
+    llm: &dyn LlmProvider,
+    req: &ChatRequest,
+    calls: &mut u32,
+    on_progress: &(dyn Fn(CadProgress) + Send + Sync),
+) -> Result<ChatResponse, ProviderError> {
+    let sink = |d: StreamDelta| on_progress(CadProgress::Delta(d));
     *calls += 1;
-    match llm.chat(req.clone()).await {
+    match llm.chat_stream(req.clone(), &sink).await {
         Err(ProviderError::BadResponse(why)) => {
             log::warn!("[cad] 坏响应,重试一次:{why}");
+            on_progress(CadProgress::StreamReset);
             *calls += 1;
-            llm.chat(req.clone()).await
+            llm.chat_stream(req.clone(), &sink).await
         }
         other => other,
     }
 }
+
+/// 不往外报进度的回调(中间步骤用:比如先让视觉模型描述图,那段话不是给用户看的回答)。
+pub(crate) fn no_progress(_: CadProgress) {}
 
 /// 调用方已经拿到手的第一版回答(对话式建模:同一次调用既判断意图又出代码,不该为了进循环再问一遍)。
 pub(crate) struct FirstAnswer {
@@ -297,7 +318,7 @@ pub(crate) async fn build_loop(
                 let req = ChatRequest::new(&cfg.code_model, messages.clone())
                     .thinking(cfg.code_thinking)
                     .max_tokens(cfg.code_max_tokens);
-                match chat_once(llm, &req, &mut report.llm_calls).await {
+                match chat_once(llm, &req, &mut report.llm_calls, on_progress).await {
                     Ok(a) => a,
                     // 已经有一版能用的了:限流、断网这类中途故障不该让前面的成果作废
                     Err(e) if !candidates.is_empty() => {
@@ -765,14 +786,47 @@ result = base - slot\n";
     }
 
     #[tokio::test]
+    async fn the_answer_streams_out_and_a_bad_response_wipes_what_was_shown() {
+        use pp_providers::llm::StreamDelta;
+        // 第一次:空内容(坏响应,要重问);第二次:正常的代码
+        let llm = MockLlm::new(Vec::<String>::new())
+            .then_fail(ProviderError::BadResponse("empty content".into()))
+            .then_answer(fenced(GOOD));
+        let exec = FakeExec::new([Ok(metrics([60.0, 24.0, 6.0]))]);
+        let seen = Mutex::new(Vec::new());
+        let built = generate_model(&llm, &exec, &spec(), &CadConfig::default(), &|p| seen.lock().unwrap().push(p))
+            .await
+            .unwrap();
+        assert_eq!(built.report.llm_calls, 2);
+
+        let seen = seen.into_inner().unwrap();
+        let reset_at = seen.iter().position(|p| *p == CadProgress::StreamReset).expect("重问之前要通知界面清掉已经显示的片段");
+        let streamed: String = seen[reset_at..]
+            .iter()
+            .filter_map(|p| match p {
+                CadProgress::Delta(StreamDelta::Content(t)) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(streamed, fenced(GOOD), "片段接起来就是完整的回答");
+        let first_delta = seen.iter().position(|p| matches!(p, CadProgress::Delta(_))).unwrap();
+        let running = seen.iter().position(|p| matches!(p, CadProgress::Running { .. })).unwrap();
+        assert!(reset_at < first_delta && first_delta < running, "顺序:清空 → 片段 → 开始执行");
+    }
+
+    #[tokio::test]
     async fn a_runtime_error_is_fed_back_with_its_line_and_the_fix_is_delivered() {
         let broken = GOOD.replace("result = base - slot", "result = fillet(base.edges(), radius=50)");
         let llm = MockLlm::new([fenced(&broken), fenced(GOOD)]);
         let exec = FakeExec::new([Err(script_error("Failed creating a fillet", 10)), Ok(metrics([60.0, 24.0, 6.0]))]);
         let seen_progress = Mutex::new(Vec::new());
-        let built = generate_model(&llm, &exec, &spec(), &CadConfig::default(), &|p| seen_progress.lock().unwrap().push(p))
-            .await
-            .unwrap();
+        // 流式片段是高频事件,不算「一步」:这里只看步骤
+        let record = |p: CadProgress| {
+            if !p.is_stream() {
+                seen_progress.lock().unwrap().push(p);
+            }
+        };
+        let built = generate_model(&llm, &exec, &spec(), &CadConfig::default(), &record).await.unwrap();
 
         assert_eq!(built.code, GOOD);
         assert_eq!((built.report.llm_calls, built.report.runs), (2, 2));

@@ -59,6 +59,7 @@ Rust + Tauri 2 + Leptos 0.7（CSR）+ Trunk 0.21 + Tailwind v4 + leptos_i18n 0.5
 - Windows 上子进程刚被杀的那一瞬间，它的工作目录可能还删不掉——`remove_dir_all` 要带几次短重试。
 - **别在 bash heredoc 里写带反斜杠转义的 Python 字符串**（`
 `、`\d`）：到 Python 手里已经被吃掉一层，写出去的文件里变成真换行。改这类内容用编辑工具，或者用 `chr(10)` / `chr(92)` 拼。
+- **两个互相镜像的 `Effect` 必须「值不一样才写」**：Leptos 的 `set` 不管值变没变都会通知订阅者。`A 变了 → 写 B`、`B 变了 → 写 A` 这一对如果无条件地写，就是一个死循环——界面线程被占满，窗口卡死，连 DevTools（`cdp.py`）都连不上（表现为 `Runtime.enable` 超时）。项目抽屉的开关同步（`project_drawer.rs`）踩过。
 
 ## 常用命令
 
@@ -100,6 +101,8 @@ cargo tauri build --bundles nsis                  # 本机出 Windows 安装包(
 - **对话的意图判断和干活是同一次模型调用**（`pp-agent::chat`）：有 ```python 围栏 = 改模型，没有 = 回答 / 反问。别加「先分类再执行」的第二次调用。
 - **一轮对话要么整轮入库，要么什么都不留**（`command/design.rs::design_send`）：先调模型、后写库；失败时输入框里的话原样留着。
 - 撤销和分叉靠版本树（选回 `base_version_id`），不删任何东西。
+- **回答是流式的**：`LlmProvider::chat_stream` → `CadProgress::Delta` → 后端攒 50 毫秒发一次 `cad-stream` 事件 → 前端 `state.cad_stream`（`LiveAnswer`）。只有给人看的自由文本走流式；JSON 模式的调用不流。界面上正文显示那句话，代码只报行数。
+- **一轮可以中途取消**（`src-tauri/src/turns.rs`，`cancel_turn(scope)`，作用域键 `design:<id>` / `board:<id>` / `research`）：**只把花时间的那一段包进 `turn_guard.run(..)`**（问模型、出图、跑脚本），落盘入库那一段不包——这样取消时「要么整轮入库，要么什么都不留」依然成立。新增一个会等很久的命令时照这个写。取消会连建模引擎里正在跑的脚本一起杀（`pp_cad::CancelFlag`）。错误码 `cancelled` 不是故障，前端当普通提示显示。
 - 3D 视图的容器必须在组件创建时就在 DOM 里：不要把它放进 `<Show>` 分支（挂载的 Effect 只跑一次，容器晚出现就挂不上）。无内容时用覆盖层。
 
 - **分层**：`pp-cad` 管「执行一段代码」（引擎定位、沙箱、常驻进程 `Worker`、参数解析与改写、代码契约）；`pp-agent::cad` 管「和模型来回」（出规格、生成、修复循环、指令修补、复核），通过 `CadExecutor` trait 拿执行能力，所以流水线测试不需要引擎；`src-tauri/src/command/cad.rs` 提供真执行器、入库、演示脚本。
@@ -109,6 +112,16 @@ cargo tauri build --bundles nsis                  # 本机出 Windows 安装包(
 - **演示模式的脚本要过真流水线**（后端有测试守着）：演示的第一版故意带一个真实的 OpenCascade 错误，用来让「报错 → 修复」这条路在界面上看得见。
 - **引擎进程是常驻的**（`AppCtx.cad_worker`，`runner.py --serve`）：冷启动约 4 秒、热的约 0.1 秒，参数面板靠它才做得到即改即见。同一个进程会跑很多段代码，所以执行器里那三道「不串味」的保险（每任务全新命名空间、AST 禁止给属性赋值、`math` 替身）不能拆；给白名单放行任何「能改到共享对象」的写法之前先想清楚。常驻进程起不来会自动退回单次执行。
 - 需要真引擎的测试在没装引擎时自动跳过并打印一行说明——**CI 上看到它们「通过」不等于跑过**。
+
+## 项目是主线（阶段门、项目中枢）
+
+设计见 `docs/adr/0006-project-spine.md`。动之前要知道的：
+
+- 三个工作台（调研 `Route::Ideas` / 图片 / 建模）都能独立用，也都能**从项目里发起**：产出挂在项目名下（`project_id`），输入框里先放一句由项目信息拼的草稿。跳转时带的东西走 `AppState.handoff`（目标页面挂载时取走，只用一次），发起动作在 `controller/project.rs`。
+- **阶段门清单是从产出里算出来的**，不是手工打勾：规则全在 `pp_common::gate`（纯函数，前后端共用）。新增一个阶段的清单 = 在 `ProjectFacts` 里加计数（`pp-db/src/overview.rs` 里数出来）+ `stage_gate` 加分支 + `GateKey` 的文案。**空清单 = 没法自动判断，不是完成了。**
+- **要不要写「跳过原因」由后端按证据判**（`move_project_stage`）：前端会先问，但不要相信前端——`stage_events.forced` 是后端写的。
+- 工作台里做了可能改变清单的事（出图、采用、拿掉、建出模型、关联项目、调研完成、保存假设）之后要调 `state.reload_project_facts()`，否则看板卡片和中枢上的清单是旧的。
+- 不自动推进阶段：清单完成只是提示 + 一个按钮。
 
 ## 图片工作台（出图 / 改图）
 

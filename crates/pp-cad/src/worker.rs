@@ -14,7 +14,7 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
 use crate::engine::Engine;
-use crate::run::{job_json, read_result, sandboxed_command, stderr_tail, write_runner, CadError, RunOptions, RunOutput};
+use crate::run::{job_json, read_result, sandboxed_command, stderr_tail, write_runner, CadError, CancelFlag, RunOptions, RunOutput};
 
 /// 与 `runner.py` 里的 `SENTINEL` 一致。按「这一行里有没有它」来认协议行:
 /// OpenCascade 偶尔会绕过 Python 直接往 stdout 写东西,可能和协议行挤在同一行里。
@@ -68,7 +68,7 @@ impl Worker {
             python_version: String::new(),
             build123d_version: String::new(),
         };
-        let ready = worker.wait_for("READY", ready_timeout).map_err(|e| match e {
+        let ready = worker.wait_for("READY", ready_timeout, None).map_err(|e| match e {
             CadError::Timeout(_) => CadError::Spawn("engine did not become ready in time".into()),
             other => other,
         })?;
@@ -78,18 +78,24 @@ impl Worker {
         Ok(worker)
     }
 
-    /// 等一行含 `<SENTINEL><tag>` 的输出,返回标记后面的内容。超时 / 进程没了都会先把进程杀掉。
-    fn wait_for(&mut self, tag: &str, timeout: Duration) -> Result<String, CadError> {
+    /// 等一行含 `<SENTINEL><tag>` 的输出,返回标记后面的内容。超时 / 被取消 / 进程没了都会先把进程杀掉。
+    fn wait_for(&mut self, tag: &str, timeout: Duration, cancel: Option<&CancelFlag>) -> Result<String, CadError> {
         let marker = format!("{SENTINEL}{tag}");
         let deadline = Instant::now() + timeout;
         loop {
             let left = deadline.saturating_duration_since(Instant::now());
-            match self.lines.recv_timeout(left) {
+            // 分片等:每 0.1 秒看一眼有没有被取消(进程在跑死循环时,一行输出都不会有)
+            match self.lines.recv_timeout(left.min(Duration::from_millis(100))) {
                 Ok(line) => {
                     if let Some(at) = line.find(&marker) {
                         return Ok(line[at + marker.len()..].trim().to_string());
                     }
                 }
+                Err(RecvTimeoutError::Timeout) if cancel.is_some_and(CancelFlag::is_cancelled) => {
+                    self.kill();
+                    return Err(CadError::Cancelled);
+                }
+                Err(RecvTimeoutError::Timeout) if Instant::now() < deadline => {}
                 Err(RecvTimeoutError::Timeout) => {
                     self.kill();
                     return Err(CadError::Timeout(timeout));
@@ -117,7 +123,7 @@ impl Worker {
             self.kill();
             return Err(CadError::Protocol(format!("engine process is gone: {e}")));
         }
-        let done = self.wait_for("DONE", opts.timeout)?;
+        let done = self.wait_for("DONE", opts.timeout, Some(&opts.cancel))?;
         if done != self.seq.to_string() {
             self.kill();
             return Err(CadError::Protocol(format!("engine answered job {done}, expected {}", self.seq)));
@@ -221,6 +227,26 @@ mod tests {
         // 进程已经被杀:再用它只会得到协议错误,而不是卡住
         let after = worker.run(BOX, &root.join("job-2"), &RunOptions::default());
         assert!(matches!(after, Err(CadError::Protocol(_))), "{after:?}");
+        drop(worker);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn cancelling_stops_a_runaway_job_long_before_its_timeout() {
+        let Some(engine) = engine() else { return };
+        let root = scratch("cancel");
+        let mut worker = Worker::spawn(&engine, &root.join("sandbox"), Duration::from_secs(90)).expect("worker starts");
+        let opts = RunOptions::default(); // 超时 90 秒
+        let flag = opts.cancel.clone();
+        let stopper = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(400));
+            flag.cancel();
+        });
+        let started = Instant::now();
+        let res = worker.run("while True:\n    pass\n", &root.join("job-1"), &opts);
+        stopper.join().unwrap();
+        assert_eq!(res, Err(CadError::Cancelled));
+        assert!(started.elapsed() < Duration::from_secs(5), "取消之后 {:?} 才停下来", started.elapsed());
         drop(worker);
         let _ = std::fs::remove_dir_all(&root);
     }

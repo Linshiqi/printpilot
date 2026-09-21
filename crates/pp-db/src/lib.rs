@@ -8,6 +8,7 @@ mod cad;
 mod costs;
 mod designs;
 mod imagery;
+mod overview;
 mod projects;
 mod research;
 pub mod schema;

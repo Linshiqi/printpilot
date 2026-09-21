@@ -1,6 +1,6 @@
 [package]
 name = "printpilot"
-version = "0.9.2"
+version = "0.9.3"
 description = "PrintPilot — 3D 打印爆品工作台"
 edition = "2021"
 
@@ -43,7 +43,9 @@ serde_json = "1"
 log = "0.4"
 # 接口密钥只进系统凭据管理器(Windows Credential Manager),不写配置文件(CLAUDE.md 硬约束 4)
 keyring = { version = "3", features = ["windows-native", "apple-native"] }
+# 取消一轮对话(select + watch)。运行时本身由 tauri 托管,这里只是用它的同步原语
+tokio = { version = "1", features = ["sync", "time", "macros"] }
 
 [dev-dependencies]
 # 集成测试的 #[tokio::test] 运行时(生产环境的 tokio 由 tauri 托管)
-tokio = { version = "1", features = ["macros", "rt"] }
+tokio = { version = "1", features = ["macros", "rt", "time"] }

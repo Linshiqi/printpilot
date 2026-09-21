@@ -65,8 +65,17 @@ fn demo_llm(topic: &str) -> MockLlm {
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub async fn research_run(app: AppHandle, ctx: State<'_, Arc<AppCtx>>, brief: ResearchBrief) -> Result<SavedResearch, String> {
+pub async fn research_run(
+    app: AppHandle,
+    ctx: State<'_, Arc<AppCtx>>,
+    brief: ResearchBrief,
+    project_id: Option<String>,
+) -> Result<SavedResearch, String> {
     let ctx = ctx.inner().clone();
+    // 为某个项目做的调研:先确认项目在,别等花完钱才发现挂不上
+    if let Some(pid) = &project_id {
+        ctx.db.get_project(pid).map_err(|e| e.to_wire())?;
+    }
     let demo = ctx.config().demo_mode;
     let emit = {
         let app = app.clone();
@@ -89,9 +98,12 @@ pub async fn research_run(app: AppHandle, ctx: State<'_, Arc<AppCtx>>, brief: Re
         cfg.critic_pricing = cfg.pricing;
     }
 
-    let mut report = run_research(llm.as_ref(), search.as_deref(), &brief, &cfg, &emit)
-        .await
-        .map_err(|e| errcode::err(e.code(), e))?;
+    // 调研一次要好几次模型调用 + 检索,可以中途取消(同一时间只跑一个调研)
+    let turn_guard = ctx.turns.begin("research")?;
+    let mut report = turn_guard
+        .run(async { run_research(llm.as_ref(), search.as_deref(), &brief, &cfg, &emit).await.map_err(|e| errcode::err(e.code(), e)) })
+        .await?;
+    drop(turn_guard);
     if demo {
         report.usage.cost_fen = 0.0;
     }
@@ -108,7 +120,7 @@ pub async fn research_run(app: AppHandle, ctx: State<'_, Arc<AppCtx>>, brief: Re
     );
 
     let saved = tauri::async_runtime::spawn_blocking(move || {
-        let run_id = ctx.db.save_research(None, &brief, &report).map_err(|e| e.to_wire())?;
+        let run_id = ctx.db.save_research(project_id.as_deref(), &brief, &report).map_err(|e| e.to_wire())?;
         Ok::<_, String>(SavedResearch { run_id, brief, report })
     })
     .await

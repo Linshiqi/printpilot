@@ -20,6 +20,8 @@ pub struct AppCtx {
     /// 同一时间只许一个「解引擎包」在跑:界面重新挂载会让第二个安装请求紧跟着到,
     /// 两个并发的安装会互相清掉对方解到一半的目录
     pub engine_install: Mutex<()>,
+    /// 正在跑的「一轮」(建模对话 / 出图 / 调研),用来中途取消
+    pub turns: Arc<crate::turns::Turns>,
     config_dir: PathBuf,
     config: Mutex<AppConfig>,
     config_state: LoadState,
@@ -41,6 +43,7 @@ impl AppCtx {
             credentials: Arc::new(KeyringStore),
             cad_worker: Mutex::new(None),
             engine_install: Mutex::new(()),
+            turns: Arc::new(crate::turns::Turns::default()),
             config_dir,
             config: Mutex::new(config),
             config_state,

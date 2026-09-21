@@ -5,6 +5,7 @@ mod config_manager;
 mod credentials;
 mod ctx;
 mod engine_pack;
+mod turns;
 
 use std::sync::Arc;
 
@@ -71,6 +72,7 @@ pub fn run() {
             command::system::log_client_error,
             command::system::reveal_library,
             command::system::set_demo_mode,
+            command::system::cancel_turn,
             command::project::list_projects,
             command::project::create_project,
             command::project::get_project,
@@ -79,6 +81,8 @@ pub fn run() {
             command::project::set_project_status,
             command::project::delete_project,
             command::project::list_stage_events,
+            command::project::project_facts_all,
+            command::project::project_overview,
             command::asset::list_assets,
             command::asset::delete_asset,
             command::asset::open_asset_external,

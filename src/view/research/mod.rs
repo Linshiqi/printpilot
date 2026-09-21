@@ -1,23 +1,27 @@
-//! 预研页 · 市场调研面板:验证「供应商适配器 + 调研流水线」(预研 ③)。
-//! MVP-α 第 3 周会把它升级成正式的调研页(历史、追问、截图证据);报告区的组件到时直接复用。
+//! 调研(一级入口,侧栏「调研」):三个工作台里最靠前的一个。
+//!
+//!   左:调研输入(主题 / 价位 / 你的一手观察)+ 关联到哪个项目 + 历史
+//!   右:报告(结论、机会卡、证据卡);机会卡可以「采用为项目」
+//!
+//! 可以独立用(灵感池:先调研,看到好机会再采用为项目),也可以从项目里发起(主题已经填好,报告挂在项目名下)。
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_i18n::{t_string, td_string};
 use pp_common::provider::ProviderId;
-use pp_common::research::{Evidence, EvidenceGrade, IpRisk, ModelRoute, Opportunity, ResearchBrief, SavedResearch};
+use pp_common::research::{Evidence, EvidenceGrade, IpRisk, ModelRoute, Opportunity, ResearchBrief, ResearchRunSummary, SavedResearch};
 use pp_common::Project;
 
 use crate::i18n_util::current_locale;
 use crate::i18n::{use_i18n, Locale};
 use crate::icon::IconKind;
 use crate::ipc::{self, cmd};
-use crate::state::AppState;
-use crate::ui::{Badge, Button, Card, EmptyState, Field, SectionTitle, TextArea, TextInput, Tone};
-use crate::utils::fmt_int;
+use crate::state::{AppState, Handoff};
+use crate::ui::{Badge, Button, ButtonVariant, Card, EmptyState, Field, IconButton, SectionTitle, TextArea, TextInput, Tone};
+use crate::utils::{fmt_int, format_ts, local_tz_offset_minutes};
 
 #[component]
-pub fn ResearchPanel(state: AppState) -> impl IntoView {
+pub fn ResearchView(state: AppState) -> impl IntoView {
     let i18n = use_i18n();
     let topic = RwSignal::new(String::new());
     let price_min = RwSignal::new(String::new());
@@ -25,6 +29,41 @@ pub fn ResearchPanel(state: AppState) -> impl IntoView {
     let notes = RwSignal::new(String::new());
     let running = RwSignal::new(false);
     let result = RwSignal::new(None::<SavedResearch>);
+    // 这次调研挂在哪个项目名下(空 = 不挂,纯灵感池)
+    let project_id = RwSignal::new(None::<String>);
+    let history = RwSignal::new(Vec::<ResearchRunSummary>::new());
+    let tz = local_tz_offset_minutes();
+
+    let reload_history = move || {
+        spawn_local(async move {
+            match ipc::call_no_args::<Vec<ResearchRunSummary>>(cmd::LIST_RESEARCH_RUNS).await {
+                Ok(list) => history.set(list),
+                Err(e) => state.notify_error(e),
+            }
+        });
+    };
+    let open_run = move |run_id: String| {
+        spawn_local(async move {
+            match ipc::call::<_, SavedResearch>(cmd::GET_RESEARCH, &serde_json::json!({ "run_id": run_id })).await {
+                Ok(saved) => result.set(Some(saved)),
+                Err(e) => state.notify_error(e),
+            }
+        });
+    };
+    reload_history();
+    // 从项目里过来的:要么是「为这个项目做一次调研」(主题已填好),要么是打开一份已有的报告
+    match state.handoff.get_untracked() {
+        Some(Handoff::Research { project_id: pid, topic: t }) => {
+            state.handoff.set(None);
+            project_id.set(Some(pid));
+            topic.set(t);
+        }
+        Some(Handoff::ResearchRun { run_id }) => {
+            state.handoff.set(None);
+            open_run(run_id);
+        }
+        _ => {}
+    }
 
     let has_key = move |id: ProviderId| state.providers.with(|list| list.iter().any(|p| p.id == id && p.has_key));
     let demo = move || state.app_info.with(|i| i.as_ref().is_some_and(|i| i.demo_mode));
@@ -47,8 +86,14 @@ pub fn ResearchPanel(state: AppState) -> impl IntoView {
         running.set(true);
         state.research_progress.set(None);
         spawn_local(async move {
-            match ipc::call::<_, SavedResearch>(cmd::RESEARCH_RUN, &serde_json::json!({ "brief": brief })).await {
-                Ok(saved) => result.set(Some(saved)),
+            let args = serde_json::json!({ "brief": brief, "project_id": project_id.get_untracked() });
+            match ipc::call::<_, SavedResearch>(cmd::RESEARCH_RUN, &args).await {
+                Ok(saved) => {
+                    result.set(Some(saved));
+                    reload_history();
+                    // 挂在项目名下的调研会让那个项目的「调研」清单完成
+                    state.reload_project_facts();
+                }
                 Err(e) => state.notify_error(e),
             }
             running.set(false);
@@ -79,6 +124,7 @@ pub fn ResearchPanel(state: AppState) -> impl IntoView {
                 Ok(p) => {
                     state.notify_info(td_string!(current_locale(), lab.r_adopted, code = &p.code).to_string());
                     state.projects.update(|list| list.insert(0, p));
+                    state.reload_project_facts();
                 }
                 Err(e) => state.notify_error(e),
             }
@@ -97,9 +143,46 @@ pub fn ResearchPanel(state: AppState) -> impl IntoView {
     };
 
     view! {
-        <div class="h-full flex">
+        <div class="h-full flex flex-col">
+        <header class="shrink-0 px-6 h-14 flex items-center border-b border-gray-200 dark:border-gray-700">
+            <div class="min-w-0">
+                <h1 class="text-base font-semibold leading-tight">{move || t_string!(i18n, research.title)}</h1>
+                <p class="text-xs text-gray-500 dark:text-gray-400 truncate">{move || t_string!(i18n, research.subtitle)}</p>
+            </div>
+        </header>
+        <div class="flex-1 min-h-0 flex">
             // ---- 左:调研输入 ----
             <aside class="w-80 shrink-0 h-full overflow-y-auto border-r border-gray-200 dark:border-gray-700 p-4 space-y-4">
+                // 挂在哪个项目名下:从项目里发起时已经选好;不选 = 先调研,看到好机会再「采用为项目」
+                <Field label=move || t_string!(i18n, research.for_project)>
+                    <div class="flex items-center gap-1.5">
+                    <select
+                        class="w-full h-9 px-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-sm text-gray-900 dark:text-gray-100"
+                        on:change=move |e| {
+                            let v = event_target_value(&e);
+                            project_id.set((!v.is_empty()).then_some(v));
+                        }
+                    >
+                        <option value="" selected=move || project_id.with(Option::is_none)>{move || t_string!(i18n, research.no_project)}</option>
+                        {move || state.projects.get().into_iter().map(|p| {
+                            let pid = p.id.clone();
+                            view! {
+                                <option value=p.id.clone() selected=move || project_id.with(|cur| cur.as_deref() == Some(pid.as_str()))>
+                                    {format!("{} {}", p.code, p.title)}
+                                </option>
+                            }
+                        }).collect_view()}
+                    </select>
+                    // 选了项目:一键打开项目中枢(抽屉盖在当前页面上)
+                    <Show when=move || project_id.with(Option::is_some)>
+                        <IconButton
+                            icon=IconKind::Kanban
+                            label=move || t_string!(i18n, project.open_hub)
+                            on_click=move || state.open_project.set(project_id.get_untracked())
+                        />
+                    </Show>
+                    </div>
+                </Field>
                 <Field label=move || t_string!(i18n, lab.r_topic)>
                     <TextInput value=topic autofocus=true placeholder=move || t_string!(i18n, lab.r_topic_placeholder) on_enter=run/>
                 </Field>
@@ -113,9 +196,17 @@ pub fn ResearchPanel(state: AppState) -> impl IntoView {
                 <Field label=move || t_string!(i18n, lab.r_notes)>
                     <TextArea value=notes rows=6 placeholder=move || t_string!(i18n, lab.r_notes_placeholder)/>
                 </Field>
-                <Button icon=IconKind::Sparkles disabled=Signal::derive(move || !can_run.get()) on_click=run>
-                    {move || if running.get() { progress_text() } else { t_string!(i18n, lab.r_run).to_string() }}
-                </Button>
+                <div class="flex items-center gap-2">
+                    <Button icon=IconKind::Sparkles disabled=Signal::derive(move || !can_run.get()) on_click=run>
+                        {move || if running.get() { progress_text() } else { t_string!(i18n, lab.r_run).to_string() }}
+                    </Button>
+                    // 一次调研要好几次模型调用 + 检索:可以中途停下,这一次什么都不入库
+                    <Show when=move || running.get()>
+                        <Button variant=ButtonVariant::Secondary icon=IconKind::Ban on_click=move || state.cancel_turn("research".to_string())>
+                            {move || t_string!(i18n, studio.stop)}
+                        </Button>
+                    </Show>
+                </div>
 
                 <div class="pt-3 border-t border-gray-200 dark:border-gray-700 space-y-2 text-xs text-gray-500 dark:text-gray-400">
                     <Show
@@ -134,6 +225,35 @@ pub fn ResearchPanel(state: AppState) -> impl IntoView {
                         <p class="leading-relaxed text-amber-600 dark:text-amber-400">{move || t_string!(i18n, lab.r_status_demo)}</p>
                     </Show>
                 </div>
+
+                // ---- 历史:做过的调研都在,点开就是当时的报告 ----
+                <Show when=move || !history.with(Vec::is_empty)>
+                    <div class="pt-3 border-t border-gray-200 dark:border-gray-700 space-y-1.5">
+                        <div class="text-xs font-medium text-gray-600 dark:text-gray-300">{move || t_string!(i18n, research.history)}</div>
+                        <For each=move || history.get() key=|r| r.id.clone() let:row>
+                            {
+                                let run_id = StoredValue::new(row.id.clone());
+                                let active = move || result.with(|r| r.as_ref().is_some_and(|r| run_id.with_value(|id| &r.run_id == id)));
+                                view! {
+                                    <button
+                                        type="button"
+                                        class="w-full px-2.5 py-1.5 rounded-lg text-left transition-colors"
+                                        class=("bg-brand-soft", active)
+                                        class=("dark:bg-indigo-500/15", active)
+                                        class=("hover:bg-gray-100", move || !active())
+                                        class=("dark:hover:bg-gray-700/60", move || !active())
+                                        on:click=move |_| open_run(run_id.get_value())
+                                    >
+                                        <div class="text-xs font-medium truncate text-gray-800 dark:text-gray-100">{row.topic.clone()}</div>
+                                        <div class="text-[11px] tabular-nums text-gray-400">
+                                            {move || t_string!(i18n, project.opportunities, n = row.opportunities).to_string()}" · "{format_ts(row.created_at, tz)}
+                                        </div>
+                                    </button>
+                                }
+                            }
+                        </For>
+                    </div>
+                </Show>
             </aside>
 
             // ---- 右:报告 ----
@@ -149,6 +269,7 @@ pub fn ResearchPanel(state: AppState) -> impl IntoView {
                     Some(saved) => view! { <Report saved=saved on_adopt=adopt/> }.into_any(),
                 }}
             </section>
+        </div>
         </div>
     }
 }

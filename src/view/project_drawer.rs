@@ -1,30 +1,40 @@
-//! 项目详情抽屉:基本信息、状态操作、阶段流转时间线。
-//! MVP-α 会把它升级成完整的项目详情页(各阶段一个标签页),抽屉保留为看板上的速览。
+//! 项目中枢(右侧抽屉):项目是主线,三个工作台(调研 / 图片 / 建模)的产出都挂在这里。
+//!
+//!   阶段条 → 「下一步」卡(这个阶段的清单 + 该去哪个工作台 + 进入下一阶段)→ 名下的调研 / 图片 / 模型
+//!   → 基本信息 → 阶段流转时间线 → 暂停 / 淘汰 / 删除
+//!
+//! 清单不是手工打勾的:它从名下的产出里算出来(pp_common::gate)。
+//! 打样之后的阶段(成本、上架、订单、数据)的工具还没做出来,到那里清单是空的,靠人判断。
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_i18n::t_string;
-use pp_common::{Project, ProjectStatus, StageEvent};
+use pp_common::gate::{gate_passed, stage_gate, ProjectOverview};
+use pp_common::{Project, ProjectStatus, Stage, StageEvent};
 
-use crate::controller::ProjectController;
+use crate::controller::{ForcedMove, ProjectController};
 use crate::i18n::use_i18n;
-use crate::i18n_util::{stage_name, status_name};
-use crate::icon::IconKind;
+use crate::i18n_util::{gate_label, stage_name, status_name};
+use crate::icon::{Icon, IconKind};
 use crate::ipc::{self, cmd};
 use crate::state::AppState;
 use crate::ui::{Badge, Button, ButtonVariant, Dialog, DialogFooter, Drawer, Field, SectionTitle, TextArea, TextInput, Tone};
-use crate::utils::{format_ts, local_tz_offset_minutes};
+use crate::utils::{fmt_mm, format_ts, local_tz_offset_minutes};
+use crate::view::board::ForcedMoveDialog;
 
 #[component]
 pub fn ProjectDrawer(state: AppState) -> impl IntoView {
     let open = RwSignal::new(false);
+    // 两个方向的同步:`open_project` 有值 ⇔ 抽屉开着(从工作台跳走时控制器会把它清掉,抽屉跟着关)。
+    // ⚠️ `set` 不管值变没变都会通知订阅者:两边都必须「不一样才写」,否则这两个 Effect 会互相触发、把界面线程卡死。
     Effect::new(move |_| {
-        if state.open_project.with(Option::is_some) {
-            open.set(true);
+        let want = state.open_project.with(Option::is_some);
+        if open.get_untracked() != want {
+            open.set(want);
         }
     });
     Effect::new(move |_| {
-        if !open.get() {
+        if !open.get() && state.open_project.with_untracked(Option::is_some) {
             state.open_project.set(None);
         }
     });
@@ -33,12 +43,12 @@ pub fn ProjectDrawer(state: AppState) -> impl IntoView {
         let id = state.open_project.get();
         state
             .projects
-            .with(|list| list.iter().find(|p| Some(&p.id) == id.as_ref()).map(|p| p.code.clone()))
+            .with(|list| list.iter().find(|p| Some(&p.id) == id.as_ref()).map(|p| format!("{} · {}", p.code, p.title)))
             .unwrap_or_default()
     };
 
     view! {
-        <Drawer open=open title=title>
+        <Drawer open=open title=title wide=true>
             // 只跟踪「打开的是哪个项目」:项目列表刷新时不重建表单,用户没保存的输入不会被冲掉
             {move || state.open_project.get().map(|id| view! { <ProjectDetail state=state project_id=id/> })}
         </Drawer>
@@ -82,15 +92,47 @@ fn ProjectDetail(state: AppState, project_id: String) -> impl IntoView {
         });
     });
 
+    // 名下的产出:打开时取;产出计数变了(别处出了图、建了模型、保存了假设)再取
+    let overview = RwSignal::new(None::<ProjectOverview>);
+    Effect::new(move |_| {
+        let _facts = id.with_value(|id| state.facts_of(id));
+        let args = serde_json::json!({ "id": id.get_value() });
+        spawn_local(async move {
+            match ipc::call::<_, ProjectOverview>(cmd::PROJECT_OVERVIEW, &args).await {
+                Ok(o) => overview.set(Some(o)),
+                Err(e) => state.notify_error(e),
+            }
+        });
+    });
+    state.reload_project_facts();
+
     let show_kill = RwSignal::new(false);
     let show_delete = RwSignal::new(false);
     let kill_reason = RwSignal::new(String::new());
+    let forced = RwSignal::new(None::<ForcedMove>);
     let tz = local_tz_offset_minutes();
 
     let status = move || project.with(|p| p.as_ref().map(|p| p.status));
+    let stage = move || project.with(|p| p.as_ref().map(|p| p.stage)).unwrap_or(Stage::Idea);
+    let facts = move || id.with_value(|id| state.facts_of(id));
     let set_status = move |to: ProjectStatus, reason: Option<String>| {
         ctl.set_status(id.get_value(), to, reason, move || show_kill.set(false));
     };
+    // 进入下一阶段:证据够就直接走,不够就先问一句原因(和看板拖拽同一套规则)
+    let advance = move || {
+        if let Some(next) = stage().next() {
+            ctl.request_move(id.get_value(), next, forced);
+        }
+    };
+    let with_project = move |f: &dyn Fn(&Project)| {
+        if let Some(p) = project.get_untracked() {
+            f(&p);
+        }
+    };
+    let adopted_image = move || overview.with_untracked(|o| o.as_ref().and_then(|o| o.images.iter().find(|i| i.adopted).map(|i| i.version_id.clone())));
+    let start_research = move || with_project(&|p| ctl.start_research(p));
+    let start_board = move || with_project(&|p| ctl.start_board(p));
+    let start_design = move || with_project(&|p| ctl.start_design(p, adopted_image()));
 
     view! {
         <div class="flex items-center gap-2 flex-wrap">
@@ -102,13 +144,14 @@ fn ProjectDetail(state: AppState, project_id: String) -> impl IntoView {
                     ProjectStatus::Done => Tone::Green,
                 };
                 // 语言要在这个闭包里读(被跟踪);Badge 的 children 是稍后才执行的,那时已经不在跟踪上下文里
-                let locale = i18n.get_locale();
-                let (stage, status) = (stage_name(locale, p.stage), status_name(locale, p.status));
-                view! {
-                    <Badge tone=Tone::Neutral>{stage}</Badge>
-                    <Badge tone=tone>{status}</Badge>
-                }
+                let status = status_name(i18n.get_locale(), p.status);
+                view! { <Badge tone=tone>{status}</Badge> }
             })}
+            <span class="text-xs tabular-nums text-gray-400">
+                {move || overview.with(|o| o.as_ref().filter(|o| o.cost_fen > 0).map(|o| {
+                    t_string!(i18n, project.cost_so_far, yuan = format!("{:.2}", o.cost_fen as f64 / 100.0)).to_string()
+                }))}
+            </span>
         </div>
 
         {move || project.get().and_then(|p| p.kill_reason).map(|reason| view! {
@@ -117,6 +160,221 @@ fn ProjectDetail(state: AppState, project_id: String) -> impl IntoView {
                 {reason}
             </div>
         })}
+
+        // ---- 阶段条 ----
+        <ol class="flex items-center gap-1">
+            {Stage::ALL.into_iter().map(|s| {
+                let current = move || stage() == s;
+                let past = move || s.index() < stage().index();
+                view! {
+                    <li class="flex-1 min-w-0 space-y-1">
+                        <div
+                            class="h-1.5 rounded-full"
+                            class=("bg-brand", current)
+                            class=("bg-brand/40", past)
+                            class=("bg-gray-200", move || !current() && !past())
+                            class=("dark:bg-gray-700", move || !current() && !past())
+                        ></div>
+                        <div
+                            class="text-[11px] text-center truncate"
+                            class=("font-semibold", current)
+                            class=("text-brand", current)
+                            class=("text-gray-400", move || !current())
+                        >
+                            {move || stage_name(i18n.get_locale(), s)}
+                        </div>
+                    </li>
+                }
+            }).collect_view()}
+        </ol>
+
+        // ---- 下一步:这个阶段的清单 + 该去哪个工作台 ----
+        <section class="rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/40 p-4 space-y-3">
+            <div class="flex items-center justify-between gap-3">
+                <h3 class="text-sm font-semibold text-gray-900 dark:text-gray-50">
+                    {move || t_string!(i18n, project.gate_title, stage = stage_name(i18n.get_locale(), stage())).to_string()}
+                </h3>
+                <Show when=move || gate_passed(stage(), &facts())>
+                    <Badge tone=Tone::Green>{move || t_string!(i18n, project.gate_ready)}</Badge>
+                </Show>
+            </div>
+            {move || {
+                let items = stage_gate(stage(), &facts());
+                if items.is_empty() {
+                    return view! {
+                        <p class="text-xs leading-relaxed text-gray-500 dark:text-gray-400">{move || t_string!(i18n, project.gate_manual)}</p>
+                    }.into_any();
+                }
+                items.into_iter().map(|item| view! {
+                    <div class="flex items-center gap-2 text-sm">
+                        <span
+                            class="w-4 h-4 shrink-0 rounded-full flex items-center justify-center"
+                            class=("bg-green-500", item.done)
+                            class=("text-white", item.done)
+                            class=("border", !item.done)
+                            class=("border-gray-300", !item.done)
+                            class=("dark:border-gray-600", !item.done)
+                        >
+                            {item.done.then(|| view! { <Icon kind=IconKind::Check class="w-3 h-3"/> })}
+                        </span>
+                        <span class=("text-gray-400", item.done) class=("line-through", item.done) class=("text-gray-800", !item.done) class=("dark:text-gray-100", !item.done)>
+                            {move || gate_label(i18n.get_locale(), item.key)}
+                        </span>
+                    </div>
+                }).collect_view().into_any()
+            }}
+            <Show when=move || stage() == Stage::Idea && !facts().has_hypothesis>
+                <p class="text-xs leading-relaxed text-gray-500 dark:text-gray-400">{move || t_string!(i18n, project.hint_hypothesis)}</p>
+            </Show>
+            <div class="flex items-center gap-2 flex-wrap pt-1">
+                // 这个阶段该去的工作台(清单没完成时是主按钮)
+                {move || {
+                    let done = gate_passed(stage(), &facts());
+                    let variant = if done { ButtonVariant::Secondary } else { ButtonVariant::Primary };
+                    match stage() {
+                        Stage::Idea | Stage::Research => view! {
+                            <Button small=true variant=variant icon=IconKind::Lightbulb on_click=start_research>{move || t_string!(i18n, project.do_research)}</Button>
+                        }.into_any(),
+                        Stage::Concept => view! {
+                            <Button small=true variant=variant icon=IconKind::Image on_click=start_board>{move || t_string!(i18n, project.do_images)}</Button>
+                        }.into_any(),
+                        Stage::Model => view! {
+                            <Button small=true variant=variant icon=IconKind::Box on_click=start_design>
+                                {move || if facts().adopted_images > 0 { t_string!(i18n, project.do_model_from_image) } else { t_string!(i18n, project.do_model) }}
+                            </Button>
+                        }.into_any(),
+                        _ => ().into_any(),
+                    }
+                }}
+                <div class="flex-1"></div>
+                {move || stage().next().map(|next| {
+                    let ready = gate_passed(stage(), &facts()) || stage_gate(stage(), &facts()).is_empty();
+                    let variant = if gate_passed(stage(), &facts()) { ButtonVariant::Primary } else { ButtonVariant::Ghost };
+                    view! {
+                        <Button small=true variant=variant on_click=advance>
+                            {move || {
+                                let name = stage_name(i18n.get_locale(), next);
+                                if ready {
+                                    t_string!(i18n, project.advance, stage = name).to_string()
+                                } else {
+                                    t_string!(i18n, project.advance_anyway, stage = name).to_string()
+                                }
+                            }}
+                        </Button>
+                    }
+                })}
+            </div>
+        </section>
+
+        // ---- 名下的产出 ----
+        <section class="space-y-2">
+            <div class="flex items-center justify-between">
+                <SectionTitle title=move || t_string!(i18n, project.work_research)/>
+                <Button small=true variant=ButtonVariant::Ghost icon=IconKind::Plus on_click=start_research>{move || t_string!(i18n, project.do_research)}</Button>
+            </div>
+            {move || overview.with(|o| match o.as_ref().map(|o| o.research.clone()).unwrap_or_default() {
+                list if list.is_empty() => view! { <p class="text-xs text-gray-400">{move || t_string!(i18n, project.none_research)}</p> }.into_any(),
+                list => list.into_iter().map(|r| {
+                    let run_id = r.id.clone();
+                    view! {
+                        <button
+                            type="button"
+                            class="w-full flex items-center justify-between gap-3 px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 text-left \
+                                   hover:border-brand transition-colors"
+                            on:click=move |_| ctl.open_research(run_id.clone())
+                        >
+                            <span class="min-w-0 truncate text-sm text-gray-800 dark:text-gray-100">{r.topic.clone()}</span>
+                            <span class="shrink-0 text-[11px] tabular-nums text-gray-400">
+                                {move || t_string!(i18n, project.opportunities, n = r.opportunities).to_string()}" · "{format_ts(r.created_at, tz)}
+                            </span>
+                        </button>
+                    }
+                }).collect_view().into_any(),
+            })}
+        </section>
+
+        <section class="space-y-2">
+            <div class="flex items-center justify-between">
+                <SectionTitle title=move || t_string!(i18n, project.work_images)/>
+                <Button small=true variant=ButtonVariant::Ghost icon=IconKind::Plus on_click=start_board>{move || t_string!(i18n, project.do_images)}</Button>
+            </div>
+            {move || overview.with(|o| {
+                let (boards, images) = o.as_ref().map(|o| (o.boards.clone(), o.images.clone())).unwrap_or_default();
+                if boards.is_empty() {
+                    return view! { <p class="text-xs text-gray-400">{move || t_string!(i18n, project.none_images)}</p> }.into_any();
+                }
+                view! {
+                    // 图:采用的排前面,点一张就打开它所在的画板
+                    <div class="grid grid-cols-6 gap-1.5">
+                        {images.into_iter().map(|img| {
+                            let board_id = img.board_id.clone();
+                            view! {
+                                <button
+                                    type="button"
+                                    class="relative aspect-square rounded-md overflow-hidden border border-gray-200 dark:border-gray-700 hover:border-brand transition-colors"
+                                    on:click=move |_| ctl.open_board(board_id.clone())
+                                >
+                                    <img src=ipc::asset_url(&img.asset_id) class="w-full h-full object-cover" draggable="false"/>
+                                    {img.adopted.then(|| view! {
+                                        <span class="absolute left-0.5 top-0.5 w-3.5 h-3.5 rounded-full bg-green-500 text-white flex items-center justify-center">
+                                            <Icon kind=IconKind::Check class="w-2.5 h-2.5"/>
+                                        </span>
+                                    })}
+                                </button>
+                            }
+                        }).collect_view()}
+                    </div>
+                    <div class="flex flex-wrap gap-1.5">
+                        {boards.into_iter().map(|b| {
+                            let board_id = b.id.clone();
+                            view! {
+                                <button
+                                    type="button"
+                                    class="px-2 py-1 rounded-md border border-gray-200 dark:border-gray-700 text-[11px] text-gray-600 dark:text-gray-300 hover:border-brand transition-colors"
+                                    on:click=move |_| ctl.open_board(board_id.clone())
+                                >
+                                    {b.name.clone()}" · "{move || t_string!(i18n, project.images_count, n = b.images).to_string()}
+                                </button>
+                            }
+                        }).collect_view()}
+                    </div>
+                }.into_any()
+            })}
+        </section>
+
+        <section class="space-y-2">
+            <div class="flex items-center justify-between">
+                <SectionTitle title=move || t_string!(i18n, project.work_models)/>
+                <Button small=true variant=ButtonVariant::Ghost icon=IconKind::Plus on_click=start_design>{move || t_string!(i18n, project.do_model)}</Button>
+            </div>
+            {move || overview.with(|o| match o.as_ref().map(|o| o.designs.clone()).unwrap_or_default() {
+                list if list.is_empty() => view! { <p class="text-xs text-gray-400">{move || t_string!(i18n, project.none_models)}</p> }.into_any(),
+                list => list.into_iter().map(|d| {
+                    let design_id = d.id.clone();
+                    let size = d.size.map(|s| format!("{} × {} × {} mm", fmt_mm(s[0]), fmt_mm(s[1]), fmt_mm(s[2])));
+                    view! {
+                        <button
+                            type="button"
+                            class="w-full flex items-center gap-3 px-2 py-2 rounded-lg border border-gray-200 dark:border-gray-700 text-left hover:border-brand transition-colors"
+                            on:click=move |_| ctl.open_design(design_id.clone())
+                        >
+                            <div class="w-11 h-11 shrink-0 rounded-md overflow-hidden bg-gray-100 dark:bg-gray-900 flex items-center justify-center text-gray-300 dark:text-gray-600">
+                                {match d.thumb.clone() {
+                                    Some(thumb) => view! { <img src=thumb class="w-full h-full object-cover" draggable="false"/> }.into_any(),
+                                    None => view! { <Icon kind=IconKind::Box class="w-5 h-5"/> }.into_any(),
+                                }}
+                            </div>
+                            <div class="min-w-0 flex-1">
+                                <div class="text-sm truncate text-gray-800 dark:text-gray-100">{d.name.clone()}</div>
+                                <div class="text-[11px] tabular-nums text-gray-400">
+                                    {size.unwrap_or_else(|| "—".into())}" · "{move || t_string!(i18n, project.versions_count, n = d.versions).to_string()}
+                                </div>
+                            </div>
+                        </button>
+                    }
+                }).collect_view().into_any(),
+            })}
+        </section>
 
         <section class="space-y-3">
             <SectionTitle title=move || t_string!(i18n, project.details)/>
@@ -201,6 +459,8 @@ fn ProjectDetail(state: AppState, project_id: String) -> impl IntoView {
                 {move || t_string!(i18n, common.delete)}
             </Button>
         </section>
+
+        <ForcedMoveDialog pending=forced ctl=ctl/>
 
         <Dialog open=show_kill title=move || t_string!(i18n, project.kill_title)>
             <Field

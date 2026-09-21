@@ -178,9 +178,33 @@ impl LlmPricing {
     }
 }
 
+/// 流式回答里的一小段。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StreamDelta {
+    /// 思考模式下的思维链(先到)
+    Reasoning(String),
+    /// 正文
+    Content(String),
+}
+
+/// 收片段的回调。必须很快返回(它在收网络数据的循环里被调用)。
+pub type DeltaSink<'a> = &'a (dyn Fn(StreamDelta) + Send + Sync);
+
 #[async_trait]
 pub trait LlmProvider: Send + Sync {
     async fn chat(&self, req: ChatRequest) -> Result<ChatResponse, ProviderError>;
+
+    /// 流式:一边收一边把片段交给 `sink`,最后返回和 `chat` 一样的完整回答(含用量)。
+    /// **丢掉这个 future = 取消**:连接随之关闭,供应商那边停止生成(已经生成的 token 照样计费)。
+    /// 默认实现给不支持流式的供应商:整段回答当成一个片段。
+    async fn chat_stream(&self, req: ChatRequest, sink: DeltaSink<'_>) -> Result<ChatResponse, ProviderError> {
+        let resp = self.chat(req).await?;
+        if let Some(r) = &resp.reasoning {
+            sink(StreamDelta::Reasoning(r.clone()));
+        }
+        sink(StreamDelta::Content(resp.content.clone()));
+        Ok(resp)
+    }
 }
 
 #[cfg(test)]

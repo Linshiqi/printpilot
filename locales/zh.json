@@ -6,7 +6,7 @@
   "nav": {
     "dashboard": "工作台",
     "projects": "项目",
-    "ideas": "灵感池",
+    "ideas": "调研",
     "calendar": "内容日历",
     "orders": "订单与打印",
     "analytics": "数据",
@@ -84,11 +84,38 @@
     "killed_because": "淘汰原因",
     "delete_title": "删除项目",
     "delete_confirm": "删除 {{ code }}?流转记录与文件会保留在资料库里。",
-    "forced_title": "跳过了中间阶段",
-    "forced_hint": "从「{{ from }}」直接到「{{ to }}」。写一句原因,复盘时会用到。",
+    "forced_title": "这一步的证据还不够",
+    "forced_hint": "从「{{ from }}」到「{{ to }}」。写一句原因,复盘时会用到。",
     "forced_reason_label": "原因",
     "forced_reason_placeholder": "例如:已有现成模型,不需要调研和建模",
-    "details": "基本信息"
+    "details": "基本信息",
+    "forced_skipped": "中间跳过的阶段没法自动判断做没做(工具还没做出来)。",
+    "gate_title": "离开「{{ stage }}」之前",
+    "gate_ready": "清单完成,可以往下走",
+    "gate_manual": "这个阶段的工具(打样成本、上架发布、订单、数据)还没做出来,先靠你自己判断。",
+    "gate_hypothesis": "写下要验证的假设",
+    "gate_research": "有一份调研报告",
+    "gate_adopted_image": "采用了一张预览图",
+    "gate_model": "建出了一个模型",
+    "hint_hypothesis": "在下面「基本信息」里写一句:谁会买、为什么买、愿意付多少。",
+    "advance": "进入「{{ stage }}」",
+    "advance_anyway": "先不管,进入「{{ stage }}」…",
+    "ready_badge": "可推进",
+    "open_hub": "打开项目(清单、名下的调研 / 图片 / 模型)",
+    "work_research": "调研",
+    "work_images": "图片",
+    "work_models": "模型",
+    "do_research": "做调研",
+    "do_images": "出预览图",
+    "do_model": "开始建模",
+    "do_model_from_image": "用采用的图建模",
+    "none_research": "还没有调研。",
+    "none_images": "还没有图。",
+    "none_models": "还没有模型。",
+    "cost_so_far": "AI 已花 ¥{{ yuan }}",
+    "opportunities": "{{ n }} 个机会",
+    "images_count": "{{ n }} 张",
+    "versions_count": "{{ n }} 个版本"
   },
   "settings": {
     "title": "设置",
@@ -137,7 +164,7 @@
   },
   "lab": {
     "title": "技术预研",
-    "subtitle": "W0 的验证场:3D 视图桥、几何内核、调研流水线。",
+    "subtitle": "W0 的验证场:3D 视图桥与几何内核。(代码建模和市场调研已经各自成了一级入口。)",
     "generate": "生成样例",
     "shape_sphere": "球",
     "shape_torus": "环",
@@ -179,8 +206,6 @@
     "show_bed": "成型范围",
     "cut_preview": "预览切面",
     "pick_model": "选一个模型查看",
-    "tab_model": "3D 模型",
-    "tab_research": "市场调研",
     "r_topic": "调研方向",
     "r_topic_placeholder": "例如:桌面收纳、猫咪周边",
     "r_price": "目标价位(元,可不填)",
@@ -321,6 +346,13 @@
     "p_param_range": "参数 {{ name }} = {{ value }} 超出了它自己声明的范围",
     "p_unchanged": "模型交回了没有改动的代码"
   },
+  "research": {
+    "title": "调研",
+    "subtitle": "先搞清楚值不值得做:需求、竞品、价位、风险。看到好机会就「采用为项目」;也可以为已有的项目做。",
+    "for_project": "为哪个项目调研",
+    "no_project": "不挂项目(先找机会)",
+    "history": "做过的调研"
+  },
   "imagery": {
     "title": "图片",
     "subtitle": "和 AI 一句一句地出图、改图。选中的那张就是「当前这张」,接下来说的话改的就是它。",
@@ -410,7 +442,9 @@
     "undo": "撤销这次修改",
     "load_failed_code": "把最后一版代码放进编辑器",
     "event_manual": "手改代码并运行",
-    "msg_usage": "¥{{ yuan }} · {{ secs }} 秒"
+    "msg_usage": "¥{{ yuan }} · {{ secs }} 秒",
+    "stop": "停止",
+    "live_code": "正在写代码 · 已写 {{ n }} 行"
   },
   "backend": {
     "not_found": "找不到对应的记录",
@@ -434,6 +468,7 @@
     "cad_timeout": "模型代码执行超时",
     "cad_script_error": "模型代码运行出错",
     "image_unreadable": "这张图片读不出来",
+    "cancelled": "已停止。这一轮什么都没有保存,输入框里的话还在。",
     "unknown": "出错了"
   }
 }

@@ -4,7 +4,7 @@
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
-use super::{ChatRequest, ChatResponse, LlmProvider, Usage};
+use super::{ChatRequest, ChatResponse, DeltaSink, LlmProvider, StreamDelta, Usage};
 use crate::error::ProviderError;
 use crate::http;
 
@@ -77,6 +77,82 @@ pub(crate) fn build_body(req: &ChatRequest, send_thinking_field: bool) -> Value 
     body
 }
 
+fn usage_of(v: &Value) -> Usage {
+    let num = |path: &str| v.pointer(path).and_then(Value::as_u64).unwrap_or(0);
+    Usage {
+        prompt_tokens: num("/usage/prompt_tokens"),
+        completion_tokens: num("/usage/completion_tokens"),
+        // DeepSeek 的字段;OpenAI 风格的放在 prompt_tokens_details.cached_tokens
+        cache_hit_tokens: num("/usage/prompt_cache_hit_tokens").max(num("/usage/prompt_tokens_details/cached_tokens")),
+    }
+}
+
+/// 流式响应(SSE)的解析器:喂字节块进去,吐片段出来;最后 `finish` 得到完整回答。
+/// 纯状态机,不碰网络——网络那一层只管把收到的字节原样喂进来。
+///
+/// 要对付的几件事:一个事件可能被切在两个字节块里(连一个汉字都可能被切开,所以**按字节攒、按整行解**);
+/// 以 `:` 开头的是注释(DeepSeek 用它保活);用量在 `[DONE]` 之前单独的一块里;流的中途也可能来一个 `error`。
+#[derive(Default)]
+pub(crate) struct SseParser {
+    pending: Vec<u8>,
+    content: String,
+    reasoning: String,
+    usage: Usage,
+    done: bool,
+}
+
+impl SseParser {
+    pub(crate) fn feed(&mut self, chunk: &[u8]) -> Result<Vec<StreamDelta>, ProviderError> {
+        self.pending.extend_from_slice(chunk);
+        let mut out = Vec::new();
+        while let Some(pos) = self.pending.iter().position(|b| *b == b'\n') {
+            let line: Vec<u8> = self.pending.drain(..=pos).collect();
+            let line = String::from_utf8_lossy(&line);
+            let line = line.trim();
+            let Some(data) = line.strip_prefix("data:") else {
+                continue; // 空行、注释(保活)、event: / id: 之类
+            };
+            let data = data.trim();
+            if data == "[DONE]" {
+                self.done = true;
+                continue;
+            }
+            let v: Value = serde_json::from_str(data).map_err(|e| ProviderError::BadResponse(format!("bad stream chunk: {e}")))?;
+            if let Some(err) = v.get("error") {
+                let msg = err.get("message").and_then(Value::as_str).unwrap_or("stream error");
+                return Err(ProviderError::BadResponse(format!("stream error: {msg}")));
+            }
+            if v.get("usage").is_some_and(|u| !u.is_null()) {
+                self.usage = usage_of(&v);
+            }
+            let delta = v.pointer("/choices/0/delta");
+            let text = |key: &str| delta.and_then(|d| d.get(key)).and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_string);
+            if let Some(r) = text("reasoning_content") {
+                self.reasoning.push_str(&r);
+                out.push(StreamDelta::Reasoning(r));
+            }
+            if let Some(c) = text("content") {
+                self.content.push_str(&c);
+                out.push(StreamDelta::Content(c));
+            }
+        }
+        Ok(out)
+    }
+
+    pub(crate) fn finish(self) -> Result<ChatResponse, ProviderError> {
+        if self.content.trim().is_empty() {
+            // 和非流式同一条规则:空内容 = 可重试的坏响应。连 [DONE] 都没等到的,多半是连接中途断了
+            let why = if self.done { "empty content" } else { "stream ended before [DONE] with no content" };
+            return Err(ProviderError::BadResponse(why.into()));
+        }
+        Ok(ChatResponse {
+            content: self.content,
+            reasoning: (!self.reasoning.is_empty()).then_some(self.reasoning),
+            usage: self.usage,
+        })
+    }
+}
+
 /// 解析响应(纯函数,可单测)。
 pub(crate) fn parse_response(v: &Value) -> Result<ChatResponse, ProviderError> {
     let message = v
@@ -92,17 +168,10 @@ pub(crate) fn parse_response(v: &Value) -> Result<ChatResponse, ProviderError> {
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
         .map(str::to_string);
-    let num = |path: &str| v.pointer(path).and_then(Value::as_u64).unwrap_or(0);
     Ok(ChatResponse {
         content,
         reasoning,
-        usage: Usage {
-            prompt_tokens: num("/usage/prompt_tokens"),
-            completion_tokens: num("/usage/completion_tokens"),
-            // DeepSeek 的字段;OpenAI 风格的放在 prompt_tokens_details.cached_tokens
-            cache_hit_tokens: num("/usage/prompt_cache_hit_tokens")
-                .max(num("/usage/prompt_tokens_details/cached_tokens")),
-        },
+        usage: usage_of(v),
     })
 }
 
@@ -112,6 +181,33 @@ impl LlmProvider for OpenAiCompat {
         let body = build_body(&req, self.send_thinking_field);
         let v = http::post_json(&self.client, &self.url(), &self.api_key, &body).await?;
         parse_response(&v)
+    }
+
+    async fn chat_stream(&self, req: ChatRequest, sink: DeltaSink<'_>) -> Result<ChatResponse, ProviderError> {
+        let mut body = build_body(&req, self.send_thinking_field);
+        body["stream"] = json!(true);
+        // 不要这个的话,流式响应里没有用量,花了多少钱就算不出来
+        body["stream_options"] = json!({ "include_usage": true });
+        let mut resp = self
+            .client
+            .post(self.url())
+            .bearer_auth(&self.api_key)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| ProviderError::Network(e.to_string()))?;
+        let status = resp.status().as_u16();
+        if !(200..300).contains(&status) {
+            let text = resp.text().await.map_err(|e| ProviderError::Network(e.to_string()))?;
+            return Err(ProviderError::from_status(status, &text));
+        }
+        let mut parser = SseParser::default();
+        while let Some(chunk) = resp.chunk().await.map_err(|e| ProviderError::Network(e.to_string()))? {
+            for delta in parser.feed(&chunk)? {
+                sink(delta);
+            }
+        }
+        parser.finish()
     }
 }
 
@@ -190,6 +286,73 @@ mod tests {
             "usage": { "prompt_tokens": 50, "completion_tokens": 5, "prompt_tokens_details": { "cached_tokens": 40 } }
         });
         assert_eq!(parse_response(&openai_style).unwrap().usage.cache_hit_tokens, 40);
+    }
+
+    #[test]
+    fn the_stream_parser_survives_chunks_cut_anywhere_even_inside_a_character() {
+        let stream = concat!(
+            ": keep-alive\n\n",
+            "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"先想想线槽\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"线槽加宽到 \"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"8 mm。\"},\"finish_reason\":\"stop\"}],\"usage\":null}\n\n",
+            "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":120,\"completion_tokens\":30,\"prompt_cache_hit_tokens\":100}}\n\n",
+            "data: [DONE]\n\n",
+        )
+        .as_bytes();
+        // 不管字节块从哪里切开(包括把一个汉字切成两半),结果都一样
+        for size in [1usize, 2, 3, 7, 64, stream.len()] {
+            let mut p = SseParser::default();
+            let mut deltas = Vec::new();
+            for chunk in stream.chunks(size) {
+                deltas.extend(p.feed(chunk).unwrap());
+            }
+            let joined = |want_reasoning: bool| -> String {
+                deltas
+                    .iter()
+                    .filter_map(|d| match d {
+                        StreamDelta::Reasoning(t) if want_reasoning => Some(t.as_str()),
+                        StreamDelta::Content(t) if !want_reasoning => Some(t.as_str()),
+                        _ => None,
+                    })
+                    .collect()
+            };
+            assert_eq!(joined(true), "先想想线槽", "块大小 {size}");
+            assert_eq!(joined(false), "线槽加宽到 8 mm。", "块大小 {size}");
+            let resp = p.finish().unwrap();
+            assert_eq!(resp.content, "线槽加宽到 8 mm。");
+            assert_eq!(resp.reasoning.as_deref(), Some("先想想线槽"));
+            assert_eq!(resp.usage, Usage { prompt_tokens: 120, completion_tokens: 30, cache_hit_tokens: 100 }, "用量在单独的一块里");
+        }
+    }
+
+    #[test]
+    fn a_stream_that_errors_or_dies_early_is_reported_not_swallowed() {
+        let mut p = SseParser::default();
+        let err = p.feed(b"data: {\"error\":{\"message\":\"overloaded\"}}\n\n").unwrap_err();
+        assert!(matches!(err, ProviderError::BadResponse(m) if m.contains("overloaded")));
+
+        // 连接中途断了:什么正文都没收到 → 可重试的坏响应
+        let mut p = SseParser::default();
+        p.feed(b": keep-alive\n\n").unwrap();
+        let err = p.finish().unwrap_err();
+        assert!(err.retryable() && matches!(err, ProviderError::BadResponse(m) if m.contains("before [DONE]")));
+
+        // 收到一半断了:已经收到的正文照样交回去(上层的检查会发现代码不完整并走修复)
+        let mut p = SseParser::default();
+        p.feed(b"data: {\"choices\":[{\"delta\":{\"content\":\"half\"}}]}\n").unwrap();
+        assert_eq!(p.finish().unwrap().content, "half");
+
+        assert!(SseParser::default().feed(b"data: not json\n").is_err());
+    }
+
+    #[test]
+    fn streaming_asks_for_usage_and_keeps_every_other_field() {
+        let mut body = build_body(&req().thinking(true), true);
+        body["stream"] = json!(true);
+        body["stream_options"] = json!({ "include_usage": true });
+        assert_eq!(body["thinking"], json!({ "type": "enabled" }));
+        assert_eq!(body["stream_options"]["include_usage"], true);
     }
 
     #[test]

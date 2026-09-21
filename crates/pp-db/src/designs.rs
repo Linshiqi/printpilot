@@ -102,15 +102,24 @@ impl Db {
 
     /// 最近动过的在前。带上当前版本的尺寸与版本数,列表不用再逐个去查。
     pub fn list_designs(&self) -> DbResult<Vec<CadDesignSummary>> {
+        self.designs_where(None)
+    }
+
+    /// 某个项目名下的设计。
+    pub fn list_designs_of_project(&self, project_id: &str) -> DbResult<Vec<CadDesignSummary>> {
+        self.designs_where(Some(project_id))
+    }
+
+    fn designs_where(&self, project_id: Option<&str>) -> DbResult<Vec<CadDesignSummary>> {
         let conn = self.r();
         let mut stmt = conn.prepare(
             "SELECT d.id, d.name, d.project_id, d.thumb, d.updated_at,
                     (SELECT metrics_json FROM cad_versions v WHERE v.id = d.current_version_id AND v.deleted_at IS NULL),
                     (SELECT COUNT(*) FROM cad_versions v WHERE v.design_id = d.id AND v.deleted_at IS NULL)
-             FROM cad_designs d WHERE d.deleted_at IS NULL
+             FROM cad_designs d WHERE d.deleted_at IS NULL AND (?1 IS NULL OR d.project_id = ?1)
              ORDER BY d.updated_at DESC, d.id DESC",
         )?;
-        let rows = stmt.query_map([], |r| {
+        let rows = stmt.query_map([project_id], |r| {
             let metrics: Option<String> = r.get(5)?;
             let size = metrics
                 .and_then(|j| serde_json::from_str::<pp_common::cad::CadMetrics>(&j).ok())

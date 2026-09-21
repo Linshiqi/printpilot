@@ -2,12 +2,13 @@
 
 use leptos::prelude::*;
 use leptos_i18n::t_string;
+use pp_common::gate::gate_passed;
 use pp_common::{NewProject, Project, ProjectStatus, Stage};
 use wasm_bindgen::JsCast;
 
 use crate::controller::{ForcedMove, ProjectController};
 use crate::i18n::use_i18n;
-use crate::i18n_util::{stage_name, status_name};
+use crate::i18n_util::{gate_label, stage_name, status_name};
 use crate::icon::{Icon, IconKind};
 use crate::pointer_drag::{PointerDrag, PointerDragGhost};
 use crate::state::AppState;
@@ -30,6 +31,8 @@ pub fn BoardView(state: AppState) -> impl IntoView {
     });
 
     let is_empty = move || state.projects_loaded.get() && state.projects.with(Vec::is_empty);
+    // 回到看板时重新数一遍各项目的产出:可能刚在工作台里出了图、建了模型
+    state.reload_project_facts();
 
     view! {
         <div class="h-full flex flex-col">
@@ -147,6 +150,10 @@ fn ProjectCard(state: AppState, project: Project, drag: PointerDrag) -> impl Int
     let days = move || p.with_value(|p| p.days_in_stage(state.now_ms.get()));
     let stale = move || p.with_value(|p| p.is_stale(state.now_ms.get()));
     let dragging = move || id.with_value(|id| drag.is_dragging(id));
+    // 名下的产出(调研 / 图 / 模型)和「这个阶段的清单完成了没有」
+    let facts = move || id.with_value(|id| state.facts_of(id));
+    let stage = project.stage;
+    let ready = move || status == ProjectStatus::Active && gate_passed(stage, &facts());
 
     view! {
         <article
@@ -201,6 +208,30 @@ fn ProjectCard(state: AppState, project: Project, drag: PointerDrag) -> impl Int
                         (d, false) => t_string!(i18n, board.days_in_stage, days = d).to_string(),
                     }}
                 </span>
+            </div>
+            // 三个工作台在这个项目名下各产出了什么;清单完成时提示可以推进
+            <div class="flex items-center gap-2.5 text-[11px] tabular-nums text-gray-400">
+                {move || {
+                    let f = facts();
+                    let cell = |icon: IconKind, n: u32, title: String| (n > 0).then(|| view! {
+                        <span class="inline-flex items-center gap-0.5" title=title>
+                            <Icon kind=icon class="w-3 h-3"/>
+                            {n}
+                        </span>
+                    });
+                    view! {
+                        {cell(IconKind::Lightbulb, f.research_runs, t_string!(i18n, project.work_research).to_string())}
+                        {cell(IconKind::Image, f.images, t_string!(i18n, project.work_images).to_string())}
+                        {cell(IconKind::Box, f.models, t_string!(i18n, project.work_models).to_string())}
+                    }
+                }}
+                <div class="flex-1"></div>
+                <Show when=ready>
+                    <span class="inline-flex items-center gap-0.5 font-medium text-green-600 dark:text-green-400">
+                        <Icon kind=IconKind::Check class="w-3 h-3"/>
+                        {move || t_string!(i18n, project.ready_badge)}
+                    </span>
+                </Show>
             </div>
         </article>
     }
@@ -273,9 +304,10 @@ fn NewProjectDialog(open: RwSignal<bool>, ctl: ProjectController) -> impl IntoVi
     }
 }
 
-/// 拖拽跳过了中间阶段:补一句原因再放行(docs/01-prd.md §4「可强行推进,但必须填写原因」)。
+/// 往前推进但证据还不够(清单没完成 / 整个跳过了一个阶段):补一句原因再放行
+/// (docs/01-prd.md §4「可强行推进,但必须填写原因」;规则在 pp_common::gate)。看板拖拽和项目中枢共用。
 #[component]
-fn ForcedMoveDialog(pending: RwSignal<Option<ForcedMove>>, ctl: ProjectController) -> impl IntoView {
+pub fn ForcedMoveDialog(pending: RwSignal<Option<ForcedMove>>, ctl: ProjectController) -> impl IntoView {
     let i18n = use_i18n();
     let open = RwSignal::new(false);
     let reason = RwSignal::new(String::new());
@@ -299,7 +331,7 @@ fn ForcedMoveDialog(pending: RwSignal<Option<ForcedMove>>, ctl: ProjectControlle
         if !can_submit.get_untracked() {
             return;
         }
-        ctl.move_stage(m.project_id, m.to, true, reason.get_untracked());
+        ctl.move_stage(m.project_id, m.to, reason.get_untracked());
         open.set(false);
     };
 
@@ -315,6 +347,20 @@ fn ForcedMoveDialog(pending: RwSignal<Option<ForcedMove>>, ctl: ProjectControlle
                     )
                 })}
             </p>
+            // 到底缺什么,说清楚
+            {move || pending.get().map(|m| {
+                let l = i18n.get_locale();
+                if m.unmet.is_empty() {
+                    return view! { <p class="text-xs text-gray-500 dark:text-gray-400">{move || t_string!(i18n, project.forced_skipped)}</p> }.into_any();
+                }
+                view! {
+                    <ul class="space-y-1 text-xs text-amber-700 dark:text-amber-300">
+                        {m.unmet.iter().map(|(stage, key)| view! {
+                            <li>{format!("· {}:{}", stage_name(l, *stage), gate_label(l, *key))}</li>
+                        }).collect_view()}
+                    </ul>
+                }.into_any()
+            })}
             <Field label=move || t_string!(i18n, project.forced_reason_label)>
                 <TextInput
                     value=reason

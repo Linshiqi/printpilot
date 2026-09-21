@@ -104,14 +104,24 @@ impl Db {
 
     /// 最近动过的在前;封面取当前选中的那张图。
     pub fn list_boards(&self) -> DbResult<Vec<ImageBoardSummary>> {
+        self.boards_where(None)
+    }
+
+    /// 某个项目名下的画板。
+    pub fn list_boards_of_project(&self, project_id: &str) -> DbResult<Vec<ImageBoardSummary>> {
+        self.boards_where(Some(project_id))
+    }
+
+    fn boards_where(&self, project_id: Option<&str>) -> DbResult<Vec<ImageBoardSummary>> {
         let conn = self.r();
         let mut stmt = conn.prepare(
             "SELECT b.id, b.name, b.purpose, b.updated_at,
                     (SELECT v.asset_id FROM image_versions v WHERE v.id = b.current_image_id AND v.deleted_at IS NULL),
                     (SELECT COUNT(*) FROM image_versions v WHERE v.board_id = b.id AND v.deleted_at IS NULL)
-             FROM image_boards b WHERE b.deleted_at IS NULL ORDER BY b.updated_at DESC, b.id DESC",
+             FROM image_boards b WHERE b.deleted_at IS NULL AND (?1 IS NULL OR b.project_id = ?1)
+             ORDER BY b.updated_at DESC, b.id DESC",
         )?;
-        let rows = stmt.query_map([], |r| {
+        let rows = stmt.query_map([project_id], |r| {
             let purpose: String = r.get(2)?;
             Ok(ImageBoardSummary {
                 id: r.get(0)?,

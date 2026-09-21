@@ -1,6 +1,6 @@
 [package]
 name = "printpilot-ui"
-version = "0.9.2"
+version = "0.9.3"
 edition = "2021"
 
 # 根包 = 前端(Leptos CSR,编译到 wasm);后端在 src-tauri,共享与领域代码在 crates/。

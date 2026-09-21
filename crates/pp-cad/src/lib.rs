@@ -15,7 +15,7 @@ pub mod worker;
 
 pub use engine::{engine_info, Engine};
 pub use params::{parse_params, set_param, ParamError};
-pub use run::{run, CadError, RunOptions, RunOutput};
+pub use run::{run, CadError, CancelFlag, RunOptions, RunOutput};
 pub use worker::Worker;
 
 #[cfg(test)]

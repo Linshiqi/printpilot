@@ -266,8 +266,15 @@ pub async fn board_list(ctx: State<'_, Arc<AppCtx>>) -> Result<Vec<ImageBoardSum
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub async fn board_create(ctx: State<'_, Arc<AppCtx>>, purpose: ImagePurpose, project_id: Option<String>) -> Result<ImageBoard, String> {
-    db(ctx.db.create_board(DEFAULT_NAME, purpose, project_id.as_deref()))
+pub async fn board_create(
+    ctx: State<'_, Arc<AppCtx>>,
+    purpose: ImagePurpose,
+    project_id: Option<String>,
+    name: Option<String>,
+) -> Result<ImageBoard, String> {
+    // 从项目里发起的画板直接用项目的名字;没给名字的,第一句话之后自动起名
+    let name = name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty()).unwrap_or_else(|| DEFAULT_NAME.to_string());
+    db(ctx.db.create_board(&name, purpose, project_id.as_deref()))
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -520,6 +527,9 @@ pub async fn board_send(
     let ctx = ctx.inner().clone();
     let demo = ctx.config().demo_mode;
     let board = db(ctx.db.get_board(&id))?;
+    // 这一轮可以中途取消:规划和出图两段包在 `turn_guard.run` 里;落盘入库那一段不包(见 turns.rs)。
+    // 注意:出图请求发出去之后再取消,供应商那边多半已经在画了——那几张图照样计费,只是我们不要了
+    let turn_guard = ctx.turns.begin(&format!("board:{id}"))?;
     let timeline = db(ctx.db.list_image_messages(&id))?;
     let current = board.current_image_id.as_deref().map(|v| db(ctx.db.get_image_version(v))).transpose()?;
 
@@ -555,24 +565,21 @@ pub async fn board_send(
     }
     let llm = llm_or_demo(&ctx, vec![demo_plan(&text, current.is_some(), count.clamp(1, max_count))])?;
     let history = history_lines(&timeline);
-    let plan = plan_image_turn(
-        llm.as_ref(),
-        ImageTurn {
-            history: &history,
-            message: if text.is_empty() { "(见图)" } else { &text },
-            purpose: board.purpose,
-            aspect: board.aspect,
-            can_edit,
-            max_count,
-            default_count: count,
-            current_prompt: current.as_ref().map(|v| v.prompt.as_str()),
-            images: &looks,
-            has_current: current.is_some(),
-        },
-        &plan_cfg,
-    )
-    .await
-    .map_err(agent_err)?;
+    let image_turn = ImageTurn {
+        history: &history,
+        message: if text.is_empty() { "(见图)" } else { &text },
+        purpose: board.purpose,
+        aspect: board.aspect,
+        can_edit,
+        max_count,
+        default_count: count,
+        current_prompt: current.as_ref().map(|v| v.prompt.as_str()),
+        images: &looks,
+        has_current: current.is_some(),
+    };
+    let plan = turn_guard
+        .run(async { plan_image_turn(llm.as_ref(), image_turn, &plan_cfg).await.map_err(agent_err) })
+        .await?;
 
     // ---- 2. 出图 ----
     let mut report = ImageTurnReport {
@@ -592,7 +599,7 @@ pub async fn board_send(
             images: if is_edit { inputs } else { Vec::new() },
         };
         emit_progress(&app, &id, "rendering", provider.name(), request.count);
-        produced = provider.generate(&request).await.map_err(provider_err)?;
+        produced = turn_guard.run(async { provider.generate(&request).await.map_err(provider_err) }).await?;
         emit_progress(&app, &id, "saving", provider.name(), produced.len() as u32);
         report.images = produced.len() as u32;
         report.cost_fen += provider.price_fen() * produced.len() as f64;

@@ -176,7 +176,7 @@ pub async fn chat_turn(
         .thinking(cfg.code_thinking)
         .max_tokens(cfg.code_max_tokens);
     let mut calls = 0;
-    let answer = chat_once(llm, &req, &mut calls).await?;
+    let answer = chat_once(llm, &req, &mut calls, on_progress).await?;
     let (text, code) = split_answer(&answer.content);
 
     if code.is_none() {
@@ -226,7 +226,8 @@ pub async fn describe_images(
     .thinking(false)
     .max_tokens(600);
     let mut calls = 0;
-    let answer = chat_once(llm, &req, &mut calls).await?;
+    // 这段描述是给写代码的模型看的中间产物,不是给用户的回答:不往界面上流
+    let answer = chat_once(llm, &req, &mut calls, &crate::cad::no_progress).await?;
     let report = CadBuildReport {
         llm_calls: calls,
         tokens_in: answer.usage.prompt_tokens,

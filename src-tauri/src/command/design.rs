@@ -244,6 +244,8 @@ pub async fn design_send(
     let design = db(ctx.db.get_design(&id))?;
     let timeline = db(ctx.db.list_cad_messages(&id))?;
     let cfg = config_for(tier, demo);
+    // 这一轮可以中途取消(见 turns.rs):花时间的那几段——看图、问模型、跑脚本——包在 `turn.run` 里;入库那一段不包
+    let turn_guard = ctx.turns.begin(&format!("design:{id}"))?;
 
     let mut user_msg = NewCadMessage::new(&id, MsgRole::User, MsgKind::Text, text.clone());
     user_msg.extra.pick = pick;
@@ -265,9 +267,10 @@ pub async fn design_send(
         let mut brief: Vec<String> = timeline.iter().filter(|m| m.role == MsgRole::User).map(|m| m.content.clone()).collect();
         brief.push(text.clone());
         let llm = llm_or_demo(&ctx, vec![DEMO_SPEC.to_string()])?;
-        let (spec, report) = design_spec(llm.as_ref(), &brief.join("\n"), &images, &cfg, &emitter(&app))
-            .await
-            .map_err(agent_err)?;
+        let progress = emitter(&app);
+        let (spec, report) = turn_guard
+            .run(async { design_spec(llm.as_ref(), &brief.join("\n"), &images, &cfg, &progress).await.map_err(agent_err) })
+            .await?;
         log::info!("[design] 规格「{}」· {} 个特征 · {} 张图 · {:.2} 分 · {}ms", spec.name, spec.features.len(), images.len(), report.cost_fen, report.elapsed_ms);
         let _ = ctx.db.add_cost(design.project_id.as_deref(), "model3d", report.cost_fen, &format!("{} · 出规格", spec.name));
 
@@ -290,7 +293,7 @@ pub async fn design_send(
         cfg.max_repairs = 0;
     }
     let current = db(ctx.db.get_cad_version(&current_id))?;
-    let exec = EngineExecutor::new(&ctx)?; // 先确认引擎在,再去花模型的钱
+    let exec = EngineExecutor::new(&ctx, turn_guard.flag.clone())?; // 先确认引擎在,再去花模型的钱
     let llm = llm_or_demo(&ctx, demo_chat_answers(&current.code, &text, !image_asset_ids.is_empty()))?;
     let mut spent = CadBuildReport::default();
 
@@ -301,7 +304,9 @@ pub async fn design_send(
             let (ctx, ids) = (ctx.clone(), image_asset_ids.clone());
             tauri::async_runtime::spawn_blocking(move || reference_data_urls(&ctx, &ids)).await.map_err(join_err)??
         };
-        let (notes, report) = describe_images(llm.as_ref(), &images, &text, &cfg).await.map_err(agent_err)?;
+        let (notes, report) = turn_guard
+            .run(async { describe_images(llm.as_ref(), &images, &text, &cfg).await.map_err(agent_err) })
+            .await?;
         add_report(&mut spent, &report);
         Some(notes)
     };
@@ -315,7 +320,10 @@ pub async fn design_send(
         pick,
         image_notes: image_notes.as_deref(),
     };
-    let outcome = chat_turn(llm.as_ref(), &exec, turn, &cfg, &emitter(&app)).await.map_err(agent_err)?;
+    let progress = emitter(&app);
+    let outcome = turn_guard
+        .run(async { chat_turn(llm.as_ref(), &exec, turn, &cfg, &progress).await.map_err(agent_err) })
+        .await?;
 
     let label = design.spec.as_ref().map(|s| s.name.clone()).unwrap_or_else(|| design.name.clone());
     tauri::async_runtime::spawn_blocking(move || {
@@ -382,11 +390,13 @@ pub async fn design_generate(app: AppHandle, ctx: State<'_, Arc<AppCtx>>, id: St
     let ctx = ctx.inner().clone();
     let demo = ctx.config().demo_mode;
     let design = db(ctx.db.get_design(&id))?;
-    let exec = EngineExecutor::new(&ctx)?;
+    let turn_guard = ctx.turns.begin(&format!("design:{id}"))?;
+    let exec = EngineExecutor::new(&ctx, turn_guard.flag.clone())?;
     let llm = llm_or_demo(&ctx, vec![fenced(&super::cad::demo_broken_code()), fenced(DEMO_CODE)])?;
-    let build = generate_model(llm.as_ref(), &exec, &spec, &config_for(tier, demo), &emitter(&app))
-        .await
-        .map_err(agent_err)?;
+    let (cfg, progress) = (config_for(tier, demo), emitter(&app));
+    let build = turn_guard
+        .run(async { generate_model(llm.as_ref(), &exec, &spec, &cfg, &progress).await.map_err(agent_err) })
+        .await?;
 
     tauri::async_runtime::spawn_blocking(move || {
         let _ = ctx.db.add_cost(design.project_id.as_deref(), "model3d", build.report.cost_fen, &format!("{} · 生成", spec.name));
@@ -446,7 +456,7 @@ async fn rebuild(ctx: Arc<AppCtx>, id: String, code: String, source: &'static st
     use pp_agent::CadExecutor as _;
     let design = db(ctx.db.get_design(&id))?;
     let parent = design.current_version_id.as_deref().map(|v| db(ctx.db.get_cad_version(v))).transpose()?;
-    let exec = EngineExecutor::new(&ctx)?;
+    let exec = EngineExecutor::new(&ctx, pp_cad::CancelFlag::default())?;
     exec.execute(&code).await.map_err(cad_err)?;
     let output = exec.take_output(&code).ok_or_else(|| cad_err(CadError::Protocol("no output".into())))?;
     tauri::async_runtime::spawn_blocking(move || {
@@ -512,9 +522,11 @@ pub async fn design_review(app: AppHandle, ctx: State<'_, Arc<AppCtx>>, id: Stri
     };
     let demo_answer = json!({ "matches": false, "differences": ["演示数据:线槽底部应为半圆形(U 形槽),现在是直角槽"] });
     let llm = llm_or_demo(&ctx, vec![demo_answer.to_string()])?;
-    let (review, report) = review_model(llm.as_ref(), &references, &renders, design.spec.as_ref(), &cad_config(demo), &emitter(&app))
-        .await
-        .map_err(agent_err)?;
+    let turn_guard = ctx.turns.begin(&format!("design:{id}"))?;
+    let (cfg, progress) = (cad_config(demo), emitter(&app));
+    let (review, report) = turn_guard
+        .run(async { review_model(llm.as_ref(), &references, &renders, design.spec.as_ref(), &cfg, &progress).await.map_err(agent_err) })
+        .await?;
     let _ = ctx.db.add_cost(design.project_id.as_deref(), "model3d", report.cost_fen, "看图复核");
     let mut reply = NewCadMessage::new(&id, MsgRole::Assistant, MsgKind::Review, "");
     reply.version_id = design.current_version_id.clone();

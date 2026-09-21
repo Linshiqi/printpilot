@@ -12,6 +12,7 @@ pub mod cmd {
     pub const LOG_CLIENT_ERROR: &str = "log_client_error";
     pub const REVEAL_LIBRARY: &str = "reveal_library";
     pub const SET_DEMO_MODE: &str = "set_demo_mode";
+    pub const CANCEL_TURN: &str = "cancel_turn";
 
     pub const LIST_PROJECTS: &str = "list_projects";
     pub const CREATE_PROJECT: &str = "create_project";
@@ -22,6 +23,8 @@ pub mod cmd {
     pub const SET_PROJECT_STATUS: &str = "set_project_status";
     pub const DELETE_PROJECT: &str = "delete_project";
     pub const LIST_STAGE_EVENTS: &str = "list_stage_events";
+    pub const PROJECT_FACTS_ALL: &str = "project_facts_all";
+    pub const PROJECT_OVERVIEW: &str = "project_overview";
 
     pub const LIST_ASSETS: &str = "list_assets";
     pub const DELETE_ASSET: &str = "delete_asset";
@@ -93,6 +96,7 @@ pub mod cmd {
 pub mod event {
     pub const RESEARCH_PROGRESS: &str = "research-progress";
     pub const CAD_PROGRESS: &str = "cad-progress";
+    pub const CAD_STREAM: &str = "cad-stream";
     pub const CAD_ENGINE_PROGRESS: &str = "cad-engine-progress";
     pub const IMAGE_PROGRESS: &str = "image-progress";
 }

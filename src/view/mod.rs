@@ -5,6 +5,7 @@ pub mod imagery;
 pub mod lab;
 pub mod placeholder;
 pub mod project_drawer;
+pub mod research;
 pub mod settings;
 pub mod sidebar;
 pub mod studio;

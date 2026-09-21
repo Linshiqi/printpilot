@@ -14,6 +14,8 @@ log = "0.4"
 base64 = "0.22"
 # 与 velo 同版本。默认特性 = rustls + 系统代理;socks 给用代理访问海外接口的用户
 reqwest = { version = "0.13", features = ["json", "socks"] }
+# 只为假模型的「流式之间停一下」(演示模式要看得见正在写);真正的运行时由 tauri 提供
+tokio = { version = "1", features = ["time"] }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["macros", "rt"] }
+tokio = { version = "1", features = ["macros", "rt", "time"] }

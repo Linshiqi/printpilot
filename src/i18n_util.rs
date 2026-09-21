@@ -7,6 +7,7 @@
 use std::cell::Cell;
 
 use leptos_i18n::td_string;
+use pp_common::gate::GateKey;
 use pp_common::{errcode, ProjectStatus, Stage};
 
 use crate::i18n::Locale;
@@ -52,6 +53,8 @@ pub fn localize_backend_err(raw: &str) -> String {
         errcode::CAD_TIMEOUT => td_string!(l, backend.cad_timeout),
         errcode::CAD_SCRIPT_ERROR => td_string!(l, backend.cad_script_error),
         errcode::IMAGE_UNREADABLE => td_string!(l, backend.image_unreadable),
+        // 用户自己点的停止:不带细节,`is_cancelled` 靠整句相等来认它
+        errcode::CANCELLED => return td_string!(l, backend.cancelled).to_string(),
         _ => td_string!(l, backend.unknown),
     };
     // 细节是给排查问题用的英文/路径,附在后面;对用户有用的那一半已经在 msg 里了
@@ -59,6 +62,21 @@ pub fn localize_backend_err(raw: &str) -> String {
         msg.to_string()
     } else {
         format!("{msg}({detail})")
+    }
+}
+
+/// 这条(已经本地化过的)错误是不是「用户自己点了停止」。
+pub fn is_cancelled(localized: &str) -> bool {
+    localized == td_string!(current_locale(), backend.cancelled)
+}
+
+/// 阶段门清单里的一项(「离开这个阶段之前该有什么」)。
+pub fn gate_label(l: Locale, key: GateKey) -> &'static str {
+    match key {
+        GateKey::Hypothesis => td_string!(l, project.gate_hypothesis),
+        GateKey::Research => td_string!(l, project.gate_research),
+        GateKey::AdoptedImage => td_string!(l, project.gate_adopted_image),
+        GateKey::Model => td_string!(l, project.gate_model),
     }
 }
 

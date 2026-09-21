@@ -18,6 +18,7 @@ use crate::view::lab::LabView;
 use crate::view::studio::StudioView;
 use crate::view::placeholder::ComingSoon;
 use crate::view::project_drawer::ProjectDrawer;
+use crate::view::research::ResearchView;
 use crate::view::settings::SettingsView;
 use crate::view::sidebar::Sidebar;
 
@@ -75,10 +76,43 @@ fn listen_cad_progress(state: AppState) {
         let Ok(p) = serde_wasm_bindgen::from_value::<Payload>(payload) else {
             return;
         };
+        // 「开始写第 N 版」= 一次新的模型调用:上一次回答的片段到此为止
+        if p.step == "writing_code" {
+            state.cad_stream.set(Default::default());
+        }
         state.cad_progress.set(Some((p.step, p.attempt, p.problems)));
     }) as Box<dyn FnMut(JsValue)>);
     spawn_local(async move {
         let _ = ipc::listen(ipc::event::CAD_PROGRESS, closure.into_js_value()).await;
+    });
+}
+
+fn listen_cad_stream(state: AppState) {
+    use wasm_bindgen::prelude::*;
+
+    #[derive(serde::Deserialize)]
+    struct Payload {
+        kind: String,
+        #[serde(default)]
+        text: String,
+    }
+
+    let closure = Closure::wrap(Box::new(move |event: JsValue| {
+        let Ok(payload) = js_sys::Reflect::get(&event, &JsValue::from_str("payload")) else {
+            return;
+        };
+        let Ok(p) = serde_wasm_bindgen::from_value::<Payload>(payload) else {
+            return;
+        };
+        state.cad_stream.update(|live| match p.kind.as_str() {
+            "reasoning" => live.reasoning.push_str(&p.text),
+            "content" => live.content.push_str(&p.text),
+            // 刚才那次回答作废了(坏响应,要重问)
+            _ => *live = Default::default(),
+        });
+    }) as Box<dyn FnMut(JsValue)>);
+    spawn_local(async move {
+        let _ = ipc::listen(ipc::event::CAD_STREAM, closure.into_js_value()).await;
     });
 }
 
@@ -165,6 +199,7 @@ pub fn App() -> impl IntoView {
     state.reload_providers();
     listen_research_progress(state);
     listen_cad_progress(state);
+    listen_cad_stream(state);
     listen_cad_engine_progress(state);
     listen_image_progress(state);
     spawn_local(async move {
@@ -187,9 +222,7 @@ pub fn App() -> impl IntoView {
                     Route::Dashboard => view! {
                         <ComingSoon icon=IconKind::Dashboard title=move || t_string!(i18n, nav.dashboard)/>
                     }.into_any(),
-                    Route::Ideas => view! {
-                        <ComingSoon icon=IconKind::Lightbulb title=move || t_string!(i18n, nav.ideas)/>
-                    }.into_any(),
+                    Route::Ideas => view! { <ResearchView state=state/> }.into_any(),
                     Route::Calendar => view! {
                         <ComingSoon icon=IconKind::Calendar title=move || t_string!(i18n, nav.calendar)/>
                     }.into_any(),

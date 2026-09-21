@@ -82,13 +82,23 @@ impl Db {
     }
 
     pub fn list_research_runs(&self, limit: u32) -> DbResult<Vec<ResearchRunSummary>> {
+        self.research_where(None, limit)
+    }
+
+    /// 某个项目名下的调研(为它做的,或者它就是从这次调研里采用出来的)。
+    pub fn list_research_of_project(&self, project_id: &str) -> DbResult<Vec<ResearchRunSummary>> {
+        self.research_where(Some(project_id), 50)
+    }
+
+    fn research_where(&self, project_id: Option<&str>, limit: u32) -> DbResult<Vec<ResearchRunSummary>> {
         let conn = self.r();
         let mut stmt = conn.prepare(
             "SELECT r.id, r.query, r.created_at, r.cost,
                     (SELECT COUNT(*) FROM opportunities o WHERE o.research_run_id = r.id)
-             FROM research_runs r ORDER BY r.created_at DESC, r.id DESC LIMIT ?1",
+             FROM research_runs r WHERE (?1 IS NULL OR r.project_id = ?1)
+             ORDER BY r.created_at DESC, r.id DESC LIMIT ?2",
         )?;
-        let rows = stmt.query_map([limit], |r| {
+        let rows = stmt.query_map(params![project_id, limit], |r| {
             Ok(ResearchRunSummary {
                 id: r.get(0)?,
                 topic: r.get(1)?,

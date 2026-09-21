@@ -20,7 +20,7 @@ use crate::i18n::{use_i18n, Locale};
 use crate::i18n_util::current_locale;
 use crate::icon::{Icon, IconKind};
 use crate::ipc::{self, cmd};
-use crate::state::{AppState, Route};
+use crate::state::{AppState, Handoff, Route};
 use crate::theme::{get_pref, set_pref};
 use crate::ui::{Badge, Button, ButtonVariant, Dialog, DialogFooter, EmptyState, IconButton, Segmented, Tone};
 
@@ -84,12 +84,13 @@ pub fn ImageryView(state: AppState) -> impl IntoView {
             }
         });
     };
-    let open = move |id: String| {
+    // `draft`:从项目里过来时,输入框里先放一句由项目信息拼出来的话(用户可以改)
+    let open_with = move |id: String, draft: String| {
         spawn_local(async move {
             match ipc::call::<_, ImageBoardDetail>(cmd::BOARD_GET, &serde_json::json!({ "id": id })).await {
                 Ok(d) => {
                     set_pref("imagery_board", &d.board.id);
-                    text.set(String::new());
+                    text.set(draft);
                     pending.set(Vec::new());
                     messages.set(d.messages);
                     versions.set(d.versions);
@@ -99,9 +100,10 @@ pub fn ImageryView(state: AppState) -> impl IntoView {
             }
         });
     };
+    let open = move |id: String| open_with(id, String::new());
     let new_board = move |purpose: ImagePurpose| {
         spawn_local(async move {
-            match ipc::call::<_, ImageBoard>(cmd::BOARD_CREATE, &serde_json::json!({ "purpose": purpose, "project_id": null })).await {
+            match ipc::call::<_, ImageBoard>(cmd::BOARD_CREATE, &serde_json::json!({ "purpose": purpose, "project_id": null, "name": null })).await {
                 Ok(b) => {
                     reload_list();
                     open(b.id);
@@ -110,14 +112,23 @@ pub fn ImageryView(state: AppState) -> impl IntoView {
             }
         });
     };
+    // 从项目里过来的:打开指定的画板,并带上那句草稿;否则回到上次打开的那个
+    let (wanted, draft) = match state.handoff.get_untracked() {
+        Some(Handoff::Board { board_id, draft }) => {
+            state.handoff.set(None);
+            (Some(board_id), draft)
+        }
+        _ => (get_pref("imagery_board"), String::new()),
+    };
     spawn_local(async move {
         match ipc::call_no_args::<Vec<ImageBoardSummary>>(cmd::BOARD_LIST).await {
             Ok(list) => {
-                let last = get_pref("imagery_board");
-                let pick = list.iter().find(|b| Some(&b.id) == last.as_ref()).or(list.first()).map(|b| b.id.clone());
+                let pick = list.iter().find(|b| Some(&b.id) == wanted.as_ref()).or(list.first()).map(|b| b.id.clone());
+                // 草稿只属于指定的那个画板:它要是不在了,别把话塞进别的画板
+                let draft = if pick == wanted { draft } else { String::new() };
                 boards.set(list);
                 if let Some(id) = pick {
-                    open(id);
+                    open_with(id, draft);
                 }
             }
             Err(e) => state.notify_error(e),
@@ -147,6 +158,7 @@ pub fn ImageryView(state: AppState) -> impl IntoView {
                     messages.update(|l| l.extend(res.messages));
                     board.set(Some(res.board));
                     reload_list();
+                    state.reload_project_facts();
                 }
                 Err(e) => state.notify_error(e),
             }
@@ -189,11 +201,15 @@ pub fn ImageryView(state: AppState) -> impl IntoView {
         spawn_local(async move {
             let args = serde_json::json!({ "version_id": v.id, "adopted": !v.adopted });
             match ipc::call::<_, ImageVersion>(cmd::BOARD_ADOPT, &args).await {
-                Ok(updated) => versions.update(|l| {
-                    if let Some(slot) = l.iter_mut().find(|x| x.id == updated.id) {
-                        *slot = updated;
-                    }
-                }),
+                Ok(updated) => {
+                    versions.update(|l| {
+                        if let Some(slot) = l.iter_mut().find(|x| x.id == updated.id) {
+                            *slot = updated;
+                        }
+                    });
+                    // 「采用了一张预览图」是项目「概念」阶段的清单项
+                    state.reload_project_facts();
+                }
                 Err(e) => state.notify_error(e),
             }
         });
@@ -207,6 +223,7 @@ pub fn ImageryView(state: AppState) -> impl IntoView {
                     versions.update(|l| l.retain(|x| x.id != v.id));
                     board.set(Some(b));
                     reload_list();
+                    state.reload_project_facts();
                 }
                 Err(e) => state.notify_error(e),
             }
@@ -252,7 +269,10 @@ pub fn ImageryView(state: AppState) -> impl IntoView {
         let Some(id) = board_id() else { return };
         spawn_local(async move {
             match ipc::call::<_, ImageBoard>(cmd::BOARD_LINK_PROJECT, &serde_json::json!({ "id": id, "project_id": project_id })).await {
-                Ok(b) => board.set(Some(b)),
+                Ok(b) => {
+                    board.set(Some(b));
+                    state.reload_project_facts();
+                }
                 Err(e) => state.notify_error(e),
             }
         });
@@ -431,6 +451,14 @@ pub fn ImageryView(state: AppState) -> impl IntoView {
                                     }
                                 }).collect_view()}
                             </select>
+                            // 已经挂在项目上:一键打开项目中枢(抽屉盖在当前页面上,不用离开工作台)
+                            <Show when=move || board.with(|x| x.as_ref().is_some_and(|x| x.project_id.is_some()))>
+                                <IconButton
+                                    icon=IconKind::Kanban
+                                    label=move || t_string!(i18n, project.open_hub)
+                                    on_click=move || state.open_project.set(board.with_untracked(|x| x.as_ref().and_then(|x| x.project_id.clone())))
+                                />
+                            </Show>
                             <div class="flex-1"></div>
                             <IconButton icon=IconKind::Trash label=move || t_string!(i18n, imagery.delete_board) on_click=move || delete_dialog.set(true)/>
                         </div>
@@ -532,6 +560,20 @@ pub fn ImageryView(state: AppState) -> impl IntoView {
                                         Some((phase, _, _)) if phase == "saving" => t_string!(i18n, imagery.phase_saving).to_string(),
                                         _ => t_string!(i18n, imagery.phase_planning).to_string(),
                                     }}
+                                    <div class="flex-1"></div>
+                                    // 停止这一轮:什么都不入库,输入框里的话还在。出图请求已经发出去的话,那几张图供应商照样计费
+                                    <Button
+                                        small=true
+                                        variant=ButtonVariant::Secondary
+                                        icon=IconKind::Ban
+                                        on_click=move || {
+                                            if let Some(id) = board_id() {
+                                                state.cancel_turn(format!("board:{id}"));
+                                            }
+                                        }
+                                    >
+                                        {move || t_string!(i18n, studio.stop)}
+                                    </Button>
                                 </div>
                             </Show>
                         </div>

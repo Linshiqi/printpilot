@@ -49,3 +49,12 @@ pub async fn reveal_library(app: AppHandle, ctx: State<'_, Arc<AppCtx>>) -> Resu
         .open_path(ctx.library_dir.display().to_string(), None::<&str>)
         .map_err(|e| errcode::err(errcode::IO_FAILED, e))
 }
+
+/// 取消正在跑的一轮(建模对话 / 出图 / 调研)。`scope`:`design:<id>` / `board:<id>` / `research`。
+/// 返回有没有取消到东西——那一轮可能刚好已经结束了,这不算错。
+#[tauri::command(rename_all = "snake_case")]
+pub async fn cancel_turn(ctx: State<'_, Arc<AppCtx>>, scope: String) -> Result<bool, String> {
+    let hit = ctx.turns.cancel(&scope);
+    log::info!("[turn] 取消 {scope}:{}", if hit { "已通知" } else { "没有在跑的" });
+    Ok(hit)
+}
